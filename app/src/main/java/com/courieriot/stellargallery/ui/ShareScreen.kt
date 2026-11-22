@@ -2,7 +2,16 @@
 
 package com.courieriot.stellargallery.ui
 
+import android.graphics.Bitmap
+import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.compose.animation.core.LinearEasing
+import androidx.compose.foundation.Image
+import androidx.compose.ui.graphics.asImageBitmap
+import com.google.zxing.BarcodeFormat
+import com.google.zxing.EncodeHintType
+import com.google.zxing.qrcode.QRCodeWriter
+import com.journeyapps.barcodescanner.ScanContract
+import com.journeyapps.barcodescanner.ScanOptions
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
@@ -81,6 +90,13 @@ fun ShareScreen(vm: MainViewModel, nav: NavController) {
     val incoming by share.incoming.collectAsStateWithLifecycle()
     val progress by share.progress.collectAsStateWithLifecycle()
     val busy by share.busy.collectAsStateWithLifecycle()
+    val pairing by share.pairingCode.collectAsStateWithLifecycle()
+    val scanLauncher = rememberLauncherForActivityResult(ScanContract()) { result ->
+        val code = result.contents ?: return@rememberLauncherForActivityResult
+        val peer = share.peerFromCode(code)
+        if (peer == null) vm.toast("That isn't a Stellar Gallery pairing code")
+        else share.send(peer, queue)
+    }
 
     DisposableEffect(sendMode) {
         share.clearProgress()
@@ -114,8 +130,26 @@ fun ShareScreen(vm: MainViewModel, nav: NavController) {
                     horizontalAlignment = Alignment.CenterHorizontally,
                     verticalArrangement = Arrangement.Center,
                 ) {
-                    Radar()
-                    Spacer(Modifier.height(20.dp))
+                    val qr = remember(pairing) { pairing?.let { runCatching { qrBitmap(it, 512) }.getOrNull() } }
+                    if (qr != null) {
+                        Image(
+                            qr.asImageBitmap(), "Pairing code",
+                            modifier = Modifier
+                                .size(190.dp)
+                                .clip(RoundedCornerShape(14.dp))
+                                .background(Color.White)
+                                .padding(8.dp),
+                        )
+                        Spacer(Modifier.height(6.dp))
+                        Text(
+                            "Can't see this phone? Scan this code from the sending phone.",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    } else {
+                        Radar()
+                    }
+                    Spacer(Modifier.height(16.dp))
                     Text("Visible as “${share.deviceName}”", style = MaterialTheme.typography.titleMedium)
                     Spacer(Modifier.height(8.dp))
                     Text(
@@ -152,8 +186,22 @@ fun ShareScreen(vm: MainViewModel, nav: NavController) {
                 Spacer(Modifier.height(18.dp))
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Text("Nearby phones", style = MaterialTheme.typography.titleSmall, modifier = Modifier.weight(1f))
+                    TextButton(enabled = !busy, onClick = {
+                        scanLauncher.launch(
+                            ScanOptions()
+                                .setDesiredBarcodeFormats(ScanOptions.QR_CODE)
+                                .setPrompt("Scan the code on the receiving phone")
+                                .setBeepEnabled(false)
+                                .setOrientationLocked(false),
+                        )
+                    }) { Text("Scan QR") }
                     CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp)
                 }
+                Text(
+                    "Already-received items are skipped, so you can resend after an interrupted transfer.",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
                 Spacer(Modifier.height(8.dp))
                 if (peers.isEmpty()) {
                     Text(
@@ -254,4 +302,12 @@ private fun Radar() {
         }
         Icon(Icons.Outlined.PhoneAndroid, null, tint = Color.White, modifier = Modifier.size(28.dp))
     }
+}
+
+private fun qrBitmap(text: String, size: Int): Bitmap {
+    val matrix = QRCodeWriter().encode(text, BarcodeFormat.QR_CODE, size, size, mapOf(EncodeHintType.MARGIN to 1))
+    val pixels = IntArray(size * size) { i ->
+        if (matrix[i % size, i / size]) android.graphics.Color.BLACK else android.graphics.Color.WHITE
+    }
+    return Bitmap.createBitmap(pixels, size, size, Bitmap.Config.ARGB_8888)
 }

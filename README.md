@@ -3,6 +3,17 @@
 A private, offline photo & video gallery for Android with a Stellar/cyberpunk look.
 No accounts, no tracking, no Google services.
 
+## New in v2.0.0
+- Open photos & videos from other apps, search with type/date filters, drag-to-select, pinch to resize the grid
+- Slideshow, set as wallpaper, accent colors + pure black theme, "On this day" memories
+- Duplicate finder, storage breakdown, photo map (OpenStreetMap), video trim & frame grab
+- Editor: draw, text, stickers, pixelate (blur) boxes, vignette
+- Strips location & camera info when sharing (toggle in Settings)
+- Vault: decoy PIN, hidden vault icon, unlock log
+- Home screen photo-frame widget
+- Wi-Fi share: QR pairing, send whole albums, resume interrupted transfers (both phones need v2.0.0)
+- Optional WebDAV backup to your own PC / NAS (off by default)
+
 ## Features (v1.0.0)
 - Photos & videos grid with date headers, albums, fullscreen viewer, pinch/double-tap zoom, video playback
 - Favorites, multi-select, copy/move to albums, share, recycle bin (30 days), sort options

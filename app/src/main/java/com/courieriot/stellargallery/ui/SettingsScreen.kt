@@ -5,7 +5,25 @@ package com.courieriot.stellargallery.ui
 import android.content.Intent
 import android.net.Uri
 import android.provider.Settings
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.ui.draw.clip
+import androidx.compose.material.icons.outlined.CloudUpload
+import androidx.compose.material.icons.outlined.DarkMode
+import androidx.compose.material.icons.outlined.FileCopy
+import androidx.compose.material.icons.outlined.History
+import androidx.compose.material.icons.outlined.LocationOff
+import androidx.compose.material.icons.outlined.Map
+import androidx.compose.material.icons.outlined.PieChart
+import androidx.compose.material.icons.outlined.Slideshow
+import androidx.compose.material.icons.outlined.VisibilityOff
+import androidx.compose.material.icons.outlined.Widgets
+import com.courieriot.stellargallery.ui.theme.Accent
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
@@ -64,6 +82,13 @@ fun SettingsScreen(vm: MainViewModel, nav: NavController) {
     val columns by vm.gridColumns.collectAsStateWithLifecycle()
     val group by vm.groupByDate.collectAsStateWithLifecycle()
     val updates by vm.checkUpdates.collectAsStateWithLifecycle()
+    val accent by vm.accent.collectAsStateWithLifecycle()
+    val black by vm.pureBlack.collectAsStateWithLifecycle()
+    val memories by vm.showMemories.collectAsStateWithLifecycle()
+    val slideSecs by vm.slideshowSeconds.collectAsStateWithLifecycle()
+    val strip by vm.stripMetadata.collectAsStateWithLifecycle()
+    val hideVault by vm.hideVaultEntry.collectAsStateWithLifecycle()
+    val widgetFav by vm.widgetFavoritesOnly.collectAsStateWithLifecycle()
     var sortDialog by remember { mutableStateOf(false) }
 
     Scaffold(
@@ -79,14 +104,62 @@ fun SettingsScreen(vm: MainViewModel, nav: NavController) {
         },
     ) { pad ->
         LazyColumn(Modifier.fillMaxSize().padding(pad)) {
+            item { Section("Appearance") }
+            item {
+                Row(
+                    Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
+                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                ) {
+                    Accent.entries.forEach { a ->
+                        Box(
+                            Modifier
+                                .size(36.dp)
+                                .clip(CircleShape)
+                                .background(a.color)
+                                .border(if (a == accent) 3.dp else 0.dp, Color.White, CircleShape)
+                                .clickable { vm.setAccent(a) },
+                        )
+                    }
+                }
+            }
+            item {
+                Text(
+                    accent.label,
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(start = 16.dp),
+                )
+            }
+            item { SwitchRow(Icons.Outlined.DarkMode, "Pure black (AMOLED)", black, vm::setPureBlack) }
+
             item { Section("Gallery") }
             item { SettingRow(Icons.Outlined.SwapVert, "Sort order", sort.label) { sortDialog = true } }
             item {
-                SettingRow(Icons.Outlined.GridView, "Grid size", "$columns per row (tap to change)") {
-                    vm.setGridColumns(if (columns >= 5) 3 else columns + 1)
+                SettingRow(Icons.Outlined.GridView, "Grid size", "$columns per row (tap, or pinch the grid)") {
+                    vm.setGridColumns(if (columns >= 6) 2 else columns + 1)
                 }
             }
             item { SwitchRow(Icons.Outlined.CalendarMonth, "Group by date", group, vm::setGroupByDate) }
+            item { SwitchRow(Icons.Outlined.History, "Show “On this day” memories", memories, vm::setShowMemories) }
+            item {
+                SettingRow(Icons.Outlined.Slideshow, "Slideshow speed", "$slideSecs seconds per photo (tap to change)") {
+                    val opts = listOf(3, 5, 8, 12)
+                    vm.setSlideshowSeconds(opts[(opts.indexOf(slideSecs) + 1).mod(opts.size)])
+                }
+            }
+
+            item { Section("Privacy") }
+            item { SwitchRow(Icons.Outlined.LocationOff, "Remove location & camera info when sharing", strip, vm::setStripMetadata) }
+            item { SwitchRow(Icons.Outlined.VisibilityOff, "Hide the vault icon (long-press the title to open)", hideVault, vm::setHideVaultEntry) }
+
+            item { Section("Widget") }
+            item { SwitchRow(Icons.Outlined.Widgets, "Photo frame shows favorites only", widgetFav, vm::setWidgetFavoritesOnly) }
+
+            item { Section("Tools") }
+            item { SettingRow(Icons.Outlined.FileCopy, "Find duplicates", "Spot look-alike photos and free up space") { nav.navigate("duplicates") } }
+            item { SettingRow(Icons.Outlined.PieChart, "Storage", "What's using space on your phone") { nav.navigate("storage") } }
+            item { SettingRow(Icons.Outlined.Map, "Photo map", "Your photos on OpenStreetMap") { nav.navigate("map") } }
+            item { SettingRow(Icons.Outlined.CloudUpload, "Backup to PC / NAS", "Optional WebDAV backup on your own network") { nav.navigate("backup") } }
             item {
                 SettingRow(Icons.Outlined.Image, "Photo access", "Change which photos the app can see") {
                     runCatching {
@@ -115,7 +188,7 @@ fun SettingsScreen(vm: MainViewModel, nav: NavController) {
                         BrandTitle()
                         Text("Version ${BuildConfig.VERSION_NAME}", style = MaterialTheme.typography.labelMedium)
                         Text(
-                            "\nA private, offline gallery. No accounts, no tracking, no Google services. " +
+                            "\nA private gallery. No accounts, no tracking, no Google services. " +
                                 "Your photos only leave this phone when you share them or send them over your own Wi-Fi.",
                             style = MaterialTheme.typography.bodyMedium,
                         )
@@ -124,7 +197,10 @@ fun SettingsScreen(vm: MainViewModel, nav: NavController) {
                                 "• Jetpack Compose & AndroidX (Apache 2.0)\n" +
                                 "• Media3 / ExoPlayer — video playback (Apache 2.0)\n" +
                                 "• Coil — image loading (Apache 2.0)\n" +
-                                "• AndroidX Biometric — vault unlock (Apache 2.0)",
+                                "• AndroidX Biometric — vault unlock (Apache 2.0)\n" +
+                                "• osmdroid — map, tiles © OpenStreetMap contributors (Apache 2.0 / ODbL)\n" +
+                                "• ZXing & zxing-android-embedded — QR pairing (Apache 2.0)\n" +
+                                "• OkHttp — WebDAV backup (Apache 2.0)",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )

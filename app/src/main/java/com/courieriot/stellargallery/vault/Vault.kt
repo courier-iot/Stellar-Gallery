@@ -76,6 +76,58 @@ class Vault(private val context: Context) {
         return MessageDigest.isEqual(hash, pbkdf2(pin, salt))
     }
 
+    // ---------- Decoy PIN + unlock log ----------
+
+    enum class PinResult { REAL, DECOY, WRONG }
+
+    fun hasDecoy(): Boolean = prefs.contains("decoy_hash")
+
+    fun setDecoyPin(pin: String) {
+        val salt = ByteArray(16).also(rng::nextBytes)
+        prefs.edit()
+            .putString("decoy_salt", b64(salt))
+            .putString("decoy_hash", b64(pbkdf2(pin, salt)))
+            .apply()
+    }
+
+    fun clearDecoy() { prefs.edit().remove("decoy_salt").remove("decoy_hash").apply() }
+
+    private fun checkDecoy(pin: String): Boolean {
+        val salt = prefs.getString("decoy_salt", null)?.let(::unb64) ?: return false
+        val hash = prefs.getString("decoy_hash", null)?.let(::unb64) ?: return false
+        return MessageDigest.isEqual(hash, pbkdf2(pin, salt))
+    }
+
+    fun check(pin: String): PinResult = when {
+        checkPin(pin) -> PinResult.REAL
+        checkDecoy(pin) -> PinResult.DECOY
+        else -> PinResult.WRONG
+    }
+
+    data class Attempt(val time: Long, val kind: String)
+
+    fun logAttempt(kind: String) {
+        val list = attempts().takeLast(49) + Attempt(System.currentTimeMillis(), kind)
+        val arr = JSONArray()
+        list.forEach { arr.put(JSONObject().put("t", it.time).put("k", it.kind)) }
+        prefs.edit().putString("attempts", arr.toString()).apply()
+    }
+
+    fun attempts(): List<Attempt> = runCatching {
+        val arr = JSONArray(prefs.getString("attempts", "[]"))
+        List(arr.length()) { i -> arr.getJSONObject(i).let { Attempt(it.getLong("t"), it.getString("k")) } }
+    }.getOrDefault(emptyList())
+
+    fun clearAttempts() { prefs.edit().remove("attempts").putLong("attempts_seen", System.currentTimeMillis()).apply() }
+
+    /** Failed / decoy attempts since the real vault was last opened. */
+    fun unseenAttempts(): Int {
+        val seen = prefs.getLong("attempts_seen", 0L)
+        return attempts().count { it.time > seen && it.kind != "unlocked" }
+    }
+
+    fun markAttemptsSeen() { prefs.edit().putLong("attempts_seen", System.currentTimeMillis()).apply() }
+
     var biometricEnabled: Boolean
         get() = prefs.getBoolean("biometric", false)
         set(v) = prefs.edit().putBoolean("biometric", v).apply()

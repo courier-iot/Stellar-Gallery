@@ -1,21 +1,37 @@
 package com.courieriot.stellargallery
 
 import android.app.Application
+import android.app.WallpaperManager
+import android.content.ClipData
+import android.content.Context
+import android.content.Intent
 import android.content.IntentSender
 import android.database.ContentObserver
+import android.graphics.Bitmap
+import android.media.MediaMetadataRetriever
+import android.net.Uri
 import android.os.Handler
 import android.os.Looper
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.courieriot.stellargallery.data.Album
+import com.courieriot.stellargallery.data.BackupManager
+import com.courieriot.stellargallery.data.DuplicateFinder
+import com.courieriot.stellargallery.data.DuplicateGroup
+import com.courieriot.stellargallery.data.GeoIndex
+import com.courieriot.stellargallery.data.GeoPhoto
 import com.courieriot.stellargallery.data.MediaItem
 import com.courieriot.stellargallery.data.MediaRepository
+import com.courieriot.stellargallery.data.MetadataStripper
 import com.courieriot.stellargallery.data.Prefs
 import com.courieriot.stellargallery.data.SortOrder
 import com.courieriot.stellargallery.data.UpdateChecker
 import com.courieriot.stellargallery.share.ShareManager
+import com.courieriot.stellargallery.ui.theme.Accent
+import com.courieriot.stellargallery.ui.theme.ThemeState
 import com.courieriot.stellargallery.vault.Vault
 import com.courieriot.stellargallery.vault.VaultItem
+import com.courieriot.stellargallery.widget.PhotoWidget
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -30,16 +46,42 @@ import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.io.File
+import java.time.Instant
+import java.time.LocalDate
+import java.time.ZoneId
 
 class PendingRequest(val sender: IntentSender, val onResult: (Boolean) -> Unit) {
     var launched = false
 }
+
+data class ExternalMedia(val uri: Uri, val mime: String?) {
+    val isVideo: Boolean get() = mime?.startsWith("video/") == true
+}
+
+enum class SearchType(val label: String) {
+    ALL("All"), PHOTOS("Photos"), VIDEOS("Videos"), SCREENSHOTS("Screenshots"), FAVORITES("Favorites"),
+}
+
+data class SearchQuery(
+    val text: String = "",
+    val type: SearchType = SearchType.ALL,
+    val fromMillis: Long? = null,
+    val toMillis: Long? = null,
+) {
+    val isEmpty: Boolean get() = text.isBlank() && type == SearchType.ALL && fromMillis == null && toMillis == null
+}
+
+data class Memory(val yearsAgo: Int, val items: List<MediaItem>)
+
+data class ScanState<T>(val running: Boolean, val done: Int, val total: Int, val result: T?)
 
 class MainViewModel(app: Application) : AndroidViewModel(app) {
     val repo = MediaRepository(app)
     private val prefs = Prefs(app)
     val vault = Vault(app)
     val share = ShareManager(app, repo)
+    val backup = BackupManager(app, prefs, repo)
 
     // ---------------- Media ----------------
 
@@ -57,6 +99,26 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     private val _checkUpdates = MutableStateFlow(prefs.checkUpdates)
     val checkUpdates: StateFlow<Boolean> = _checkUpdates
 
+    // Appearance & behavior (v2)
+    private val _accent = MutableStateFlow(prefs.accent)
+    val accent: StateFlow<Accent> = _accent
+    private val _pureBlack = MutableStateFlow(prefs.pureBlack)
+    val pureBlack: StateFlow<Boolean> = _pureBlack
+    private val _slideshowSeconds = MutableStateFlow(prefs.slideshowSeconds)
+    val slideshowSeconds: StateFlow<Int> = _slideshowSeconds
+    private val _stripMetadata = MutableStateFlow(prefs.stripMetadata)
+    val stripMetadata: StateFlow<Boolean> = _stripMetadata
+    private val _hideVaultEntry = MutableStateFlow(prefs.hideVaultEntry)
+    val hideVaultEntry: StateFlow<Boolean> = _hideVaultEntry
+    private val _showMemories = MutableStateFlow(prefs.showMemories)
+    val showMemories: StateFlow<Boolean> = _showMemories
+    private val _widgetFavoritesOnly = MutableStateFlow(prefs.widgetFavoritesOnly)
+    val widgetFavoritesOnly: StateFlow<Boolean> = _widgetFavoritesOnly
+    private val _backupOnLaunch = MutableStateFlow(prefs.backupOnLaunch)
+    val backupOnLaunch: StateFlow<Boolean> = _backupOnLaunch
+    private val _backupVideos = MutableStateFlow(prefs.backupIncludeVideos)
+    val backupVideos: StateFlow<Boolean> = _backupVideos
+
     val media: StateFlow<List<MediaItem>> = combine(rawMedia, _sortOrder) { list, sort -> sortList(list, sort) }
         .stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
     val favorites: StateFlow<List<MediaItem>> = media.map { l -> l.filter { it.isFavorite } }
@@ -64,6 +126,18 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     val albums: StateFlow<List<Album>> = rawMedia.map { buildAlbums(it) }
         .stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
     val trash: StateFlow<List<MediaItem>> = _trash
+
+    val memories: StateFlow<List<Memory>> = rawMedia.map { buildMemories(it) }
+        .stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
+
+    // Search
+    private val _searchQuery = MutableStateFlow(SearchQuery())
+    val searchQuery: StateFlow<SearchQuery> = _searchQuery
+    val searchResults: StateFlow<List<MediaItem>> = combine(media, _searchQuery) { l, q -> filterSearch(l, q) }
+        .stateIn(viewModelScope, SharingStarted.Lazily, emptyList())
+
+    // Ad-hoc lists the viewer can open (duplicates, largest files, map cluster, memories)
+    private val customIds = MutableStateFlow<Map<String, List<Long>>>(emptyMap())
 
     private val _selection = MutableStateFlow<Set<Long>>(emptySet())
     val selection: StateFlow<Set<Long>> = _selection
@@ -76,18 +150,37 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     /** Hand-offs between screens. */
     var editTarget: MediaItem? = null
+    var videoEditTarget: MediaItem? = null
     var sendQueue: List<MediaItem> = emptyList()
+
+    // External "open with"
+    private val _external = MutableStateFlow<ExternalMedia?>(null)
+    val external: StateFlow<ExternalMedia?> = _external
+    var launchedExternally = false
+        private set
 
     // ---------------- Vault ----------------
 
     private val _vaultUnlocked = MutableStateFlow(false)
     val vaultUnlocked: StateFlow<Boolean> = _vaultUnlocked
+    private val _vaultDecoy = MutableStateFlow(false)
+    val vaultDecoy: StateFlow<Boolean> = _vaultDecoy
     private val _vaultItems = MutableStateFlow<List<VaultItem>>(emptyList())
     val vaultItems: StateFlow<List<VaultItem>> = _vaultItems
     private val _vaultBusy = MutableStateFlow<String?>(null)
     val vaultBusy: StateFlow<String?> = _vaultBusy
     private val _vaultBiometric = MutableStateFlow(vault.biometricEnabled)
     val vaultBiometric: StateFlow<Boolean> = _vaultBiometric
+
+    // ---------------- Tools ----------------
+
+    private val _dupes = MutableStateFlow<ScanState<List<DuplicateGroup>>>(ScanState(false, 0, 0, null))
+    val dupes: StateFlow<ScanState<List<DuplicateGroup>>> = _dupes
+    private var dupJob: Job? = null
+
+    private val _geo = MutableStateFlow<ScanState<List<GeoPhoto>>>(ScanState(false, 0, 0, null))
+    val geo: StateFlow<ScanState<List<GeoPhoto>>> = _geo
+    private var geoJob: Job? = null
 
     // ---------------- Updates ----------------
 
@@ -98,7 +191,10 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         override fun onChange(selfChange: Boolean) { scheduleRefresh() }
     }
 
+    private var autoBackupDone = false
+
     init {
+        ThemeState.apply(prefs.accent, prefs.pureBlack)
         runCatching { app.contentResolver.registerContentObserver(repo.observeUri, true, observer) }
         if (prefs.checkUpdates) checkForUpdates(manual = false)
     }
@@ -129,14 +225,16 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             _trash.value = repo.load(trashed = true)
         }
         _loading.value = false
-        // Drop selections that no longer exist.
         val ids = rawMedia.value.mapTo(HashSet()) { it.id } + _trash.value.map { it.id }
         _selection.value = _selection.value.filterTo(HashSet()) { it in ids }
+        maybeAutoBackup()
     }
 
     fun listFor(source: String): Flow<List<MediaItem>> = when {
         source == "fav" -> favorites
         source == "trash" -> trash
+        source == "search" -> searchResults
+        source.startsWith("c_") -> combine(media, customIds) { m, c -> resolveCustom(m, c[source.drop(2)]) }
         source.startsWith("a") -> {
             val id = source.drop(1).toLongOrNull()
             media.map { l -> l.filter { it.bucketId == id } }
@@ -147,6 +245,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     fun snapshotFor(source: String): List<MediaItem> = when {
         source == "fav" -> favorites.value
         source == "trash" -> trash.value
+        source == "search" -> filterSearch(media.value, _searchQuery.value)
+        source.startsWith("c_") -> resolveCustom(media.value, customIds.value[source.drop(2)])
         source.startsWith("a") -> {
             val id = source.drop(1).toLongOrNull()
             media.value.filter { it.bucketId == id }
@@ -154,18 +254,65 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         else -> media.value
     }
 
+    /** Stores a list of ids and returns the viewer source name for it. */
+    fun setCustomList(key: String, ids: List<Long>): String {
+        customIds.value = customIds.value + (key to ids)
+        return "c_$key"
+    }
+
+    private fun resolveCustom(all: List<MediaItem>, ids: List<Long>?): List<MediaItem> {
+        if (ids.isNullOrEmpty()) return emptyList()
+        val byId = all.associateBy { it.id }
+        return ids.mapNotNull { byId[it] }
+    }
+
     // ---------------- Settings ----------------
 
     fun setSortOrder(s: SortOrder) { prefs.sortOrder = s; _sortOrder.value = s }
-    fun setGridColumns(c: Int) { prefs.gridColumns = c; _gridColumns.value = c }
+    fun setGridColumns(c: Int) { val v = c.coerceIn(2, 6); prefs.gridColumns = v; _gridColumns.value = v }
     fun setGroupByDate(b: Boolean) { prefs.groupByDate = b; _groupByDate.value = b }
     fun setCheckUpdates(b: Boolean) { prefs.checkUpdates = b; _checkUpdates.value = b }
+    fun setAccent(a: Accent) { prefs.accent = a; _accent.value = a; ThemeState.apply(a, _pureBlack.value) }
+    fun setPureBlack(b: Boolean) { prefs.pureBlack = b; _pureBlack.value = b; ThemeState.apply(_accent.value, b) }
+    fun setSlideshowSeconds(s: Int) { prefs.slideshowSeconds = s; _slideshowSeconds.value = s }
+    fun setStripMetadata(b: Boolean) { prefs.stripMetadata = b; _stripMetadata.value = b }
+    fun setHideVaultEntry(b: Boolean) { prefs.hideVaultEntry = b; _hideVaultEntry.value = b }
+    fun setShowMemories(b: Boolean) { prefs.showMemories = b; _showMemories.value = b }
+    fun setWidgetFavoritesOnly(b: Boolean) {
+        prefs.widgetFavoritesOnly = b; _widgetFavoritesOnly.value = b
+        PhotoWidget.requestUpdate(getApplication())
+    }
+
+    // ---------------- Search ----------------
+
+    fun updateSearch(q: SearchQuery) { _searchQuery.value = q }
+
+    private fun filterSearch(list: List<MediaItem>, q: SearchQuery): List<MediaItem> {
+        if (q.isEmpty) return emptyList()
+        val words = q.text.trim().lowercase().split(Regex("\\s+")).filter { it.isNotBlank() }
+        return list.filter { m ->
+            val typeOk = when (q.type) {
+                SearchType.ALL -> true
+                SearchType.PHOTOS -> !m.isVideo
+                SearchType.VIDEOS -> m.isVideo
+                SearchType.FAVORITES -> m.isFavorite
+                SearchType.SCREENSHOTS -> m.relativePath.contains("Screenshot", true) || m.bucketName.contains("Screenshot", true)
+            }
+            if (!typeOk) return@filter false
+            if (q.fromMillis != null && m.dateTaken < q.fromMillis) return@filter false
+            if (q.toMillis != null && m.dateTaken > q.toMillis) return@filter false
+            if (words.isEmpty()) return@filter true
+            val hay = (m.name + " " + m.bucketName + " " + m.relativePath + " " + m.mimeType).lowercase()
+            words.all { hay.contains(it) }
+        }
+    }
 
     // ---------------- Selection ----------------
 
     fun toggleSelection(id: Long) {
         _selection.value = _selection.value.let { if (id in it) it - id else it + id }
     }
+    fun setSelection(ids: Set<Long>) { _selection.value = ids }
     fun clearSelection() { _selection.value = emptySet() }
     fun selectAll(items: List<MediaItem>) { _selection.value = items.mapTo(HashSet()) { it.id } }
 
@@ -187,7 +334,42 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         p?.onResult?.invoke(ok)
     }
 
+    // ---------------- External "open with" ----------------
+
+    fun openExternal(uri: Uri, mime: String?) {
+        launchedExternally = true
+        _external.value = ExternalMedia(uri, mime)
+    }
+
+    fun closeExternal() { _external.value = null }
+
     // ---------------- Actions ----------------
+
+    /** Share through Android's share sheet, removing location/camera info first if enabled. */
+    fun shareMedia(context: Context, items: List<MediaItem>) {
+        if (items.isEmpty()) return
+        viewModelScope.launch {
+            val uris = if (_stripMetadata.value) {
+                withContext(Dispatchers.IO) { MetadataStripper.prepare(getApplication(), items) }
+            } else items.map { it.uri }
+            val type = when {
+                items.none { it.isVideo } -> "image/*"
+                items.all { it.isVideo } -> "video/*"
+                else -> "*/*"
+            }
+            val intent = if (uris.size == 1) {
+                Intent(Intent.ACTION_SEND).putExtra(Intent.EXTRA_STREAM, uris[0])
+            } else {
+                Intent(Intent.ACTION_SEND_MULTIPLE).putParcelableArrayListExtra(Intent.EXTRA_STREAM, ArrayList(uris))
+            }
+            intent.type = type
+            intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            intent.clipData = ClipData.newUri(context.contentResolver, "media", uris[0]).apply {
+                uris.drop(1).forEach { addItem(ClipData.Item(it)) }
+            }
+            runCatching { context.startActivity(Intent.createChooser(intent, "Share")) }
+        }
+    }
 
     fun trash(items: List<MediaItem>) {
         if (items.isEmpty()) return
@@ -240,9 +422,103 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    /** [which]: WallpaperManager.FLAG_SYSTEM, FLAG_LOCK, or both. */
+    fun setWallpaper(item: MediaItem, which: Int) {
+        viewModelScope.launch {
+            val ok = withContext(Dispatchers.IO) {
+                runCatching {
+                    val wm = WallpaperManager.getInstance(getApplication())
+                    repo.openInput(item.uri)!!.use { wm.setStream(it, null, true, which) }
+                }.isSuccess
+            }
+            toast(if (ok) "Wallpaper set" else "Couldn't set wallpaper")
+        }
+    }
+
+    fun saveVideoFrame(item: MediaItem, positionMs: Long) {
+        viewModelScope.launch {
+            val uri = withContext(Dispatchers.IO) {
+                runCatching {
+                    val r = MediaMetadataRetriever()
+                    try {
+                        r.setDataSource(getApplication(), item.uri)
+                        val frame: Bitmap = r.getFrameAtTime(positionMs * 1000, MediaMetadataRetriever.OPTION_CLOSEST)!!
+                        val base = item.name.substringBeforeLast('.')
+                        repo.saveBitmap(frame, "${base}_frame_${positionMs / 1000}s.jpg")
+                    } finally {
+                        r.release()
+                    }
+                }.getOrNull()
+            }
+            toast(if (uri != null) "Frame saved to Pictures/Stellar Gallery" else "Couldn't grab that frame")
+            if (uri != null) scheduleRefresh()
+        }
+    }
+
+    /** Saves a trimmed video produced by the editor into Movies/Stellar Gallery. */
+    fun importTrimmedVideo(file: File, name: String) {
+        viewModelScope.launch {
+            val ok = withContext(Dispatchers.IO) {
+                runCatching {
+                    file.inputStream().use { repo.insertStream(name, "video/mp4", MediaRepository.MOVIES_PATH, it) } != null
+                }.getOrDefault(false).also { file.delete() }
+            }
+            toast(if (ok) "Trimmed copy saved to Movies/Stellar Gallery" else "Couldn't save the trimmed video")
+            if (ok) scheduleRefresh()
+        }
+    }
+
+    // ---------------- Tools ----------------
+
+    fun scanDuplicates() {
+        if (dupJob?.isActive == true) return
+        val list = media.value
+        dupJob = viewModelScope.launch {
+            _dupes.value = ScanState(true, 0, list.count { !it.isVideo }, null)
+            val groups = runCatching {
+                DuplicateFinder.scan(getApplication(), list) { d, t -> _dupes.value = ScanState(true, d, t, null) }
+            }.getOrDefault(emptyList())
+            _dupes.value = ScanState(false, 0, 0, groups)
+        }
+    }
+
+    fun indexLocations(hasPermission: Boolean) {
+        if (geoJob?.isActive == true) return
+        val list = media.value
+        geoJob = viewModelScope.launch {
+            _geo.value = ScanState(true, 0, list.count { !it.isVideo }, _geo.value.result)
+            val pts = runCatching {
+                GeoIndex.index(getApplication(), list, hasPermission) { d, t -> _geo.value = ScanState(true, d, t, _geo.value.result) }
+            }.getOrDefault(emptyList())
+            _geo.value = ScanState(false, 0, 0, pts)
+        }
+    }
+
+    // ---------------- Backup ----------------
+
+    fun setBackupConfig(url: String, user: String, password: String) {
+        prefs.backupUrl = url.trim(); prefs.backupUser = user.trim(); prefs.backupPassword = password
+    }
+    fun backupUrl() = prefs.backupUrl
+    fun backupUser() = prefs.backupUser
+    fun backupPassword() = prefs.backupPassword
+    fun setBackupOnLaunch(b: Boolean) { prefs.backupOnLaunch = b; _backupOnLaunch.value = b }
+    fun setBackupVideos(b: Boolean) { prefs.backupIncludeVideos = b; _backupVideos.value = b }
+
+    fun testBackup(onResult: (String?) -> Unit) { viewModelScope.launch { onResult(backup.test()) } }
+    fun runBackup() { viewModelScope.launch { backup.run(media.value) } }
+
+    private fun maybeAutoBackup() {
+        if (autoBackupDone || !prefs.backupOnLaunch || !backup.isConfigured) return
+        if (!backup.isOnUnmeteredNetwork() || media.value.isEmpty()) return
+        autoBackupDone = true
+        runBackup()
+    }
+
     // ---------------- Vault ----------------
 
     fun vaultHasPin(): Boolean = vault.hasPin()
+    fun vaultHasDecoy(): Boolean = vault.hasDecoy()
 
     fun hideInVault(items: List<MediaItem>) {
         if (items.isEmpty()) return
@@ -253,7 +529,6 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             }
             _vaultBusy.value = null
             if (added.isEmpty()) { toast("Couldn't hide those items"); return@launch }
-            // Remove the originals (Android asks the user to confirm).
             request({ repo.deleteRequest(added.map { it.first.uri }) }) { ok ->
                 viewModelScope.launch {
                     if (ok) {
@@ -273,41 +548,71 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     fun setupVaultPin(pin: String) {
         viewModelScope.launch {
             withContext(Dispatchers.Default) { vault.setPin(pin) }
-            unlockInternal()
+            unlockInternal(decoy = false)
         }
     }
 
     fun changeVaultPin(pin: String) {
         viewModelScope.launch {
+            val clash = withContext(Dispatchers.Default) { vault.check(pin) == Vault.PinResult.DECOY }
+            if (clash) { toast("That's your decoy PIN — pick a different one"); return@launch }
             withContext(Dispatchers.Default) { vault.setPin(pin) }
             toast("Vault PIN changed")
         }
     }
 
-    fun unlockWithPin(pin: String, onResult: (Boolean) -> Unit) {
+    fun setDecoyPin(pin: String?) {
         viewModelScope.launch {
-            val ok = withContext(Dispatchers.Default) { vault.checkPin(pin) }
-            if (ok) unlockInternal()
-            onResult(ok)
+            if (pin == null) {
+                vault.clearDecoy(); toast("Decoy PIN removed"); return@launch
+            }
+            val clash = withContext(Dispatchers.Default) { vault.checkPin(pin) }
+            if (clash) { toast("The decoy PIN must be different from your real PIN"); return@launch }
+            withContext(Dispatchers.Default) { vault.setDecoyPin(pin) }
+            toast("Decoy PIN set — it opens an empty vault")
         }
     }
 
-    fun unlockWithBiometric() { viewModelScope.launch { unlockInternal() } }
+    fun unlockWithPin(pin: String, onResult: (Boolean) -> Unit) {
+        viewModelScope.launch {
+            val r = withContext(Dispatchers.Default) { vault.check(pin) }
+            when (r) {
+                Vault.PinResult.REAL -> unlockInternal(decoy = false)
+                Vault.PinResult.DECOY -> { vault.logAttempt("decoy"); unlockInternal(decoy = true) }
+                Vault.PinResult.WRONG -> vault.logAttempt("wrong")
+            }
+            onResult(r != Vault.PinResult.WRONG)
+        }
+    }
 
-    private suspend fun unlockInternal() {
-        _vaultItems.value = withContext(Dispatchers.IO) { runCatching { vault.items() }.getOrDefault(emptyList()) }
+    fun unlockWithBiometric() { viewModelScope.launch { unlockInternal(decoy = false) } }
+
+    private suspend fun unlockInternal(decoy: Boolean) {
+        _vaultDecoy.value = decoy
+        if (decoy) {
+            _vaultItems.value = emptyList()
+        } else {
+            val unseen = vault.unseenAttempts()
+            if (unseen > 0) toast("$unseen failed or decoy unlock attempt(s) since last time — see Unlock log")
+            vault.markAttemptsSeen()
+            _vaultItems.value = withContext(Dispatchers.IO) { runCatching { vault.items() }.getOrDefault(emptyList()) }
+        }
         _vaultUnlocked.value = true
     }
+
+    fun vaultAttempts(): List<Vault.Attempt> = vault.attempts().reversed()
+    fun clearVaultAttempts() { vault.clearAttempts() }
 
     fun lockVault() {
         if (!_vaultUnlocked.value) return
         _vaultUnlocked.value = false
+        _vaultDecoy.value = false
         _vaultItems.value = emptyList()
         viewModelScope.launch(Dispatchers.IO) { vault.clearTemp() }
     }
 
     private suspend fun reloadVault() {
-        if (_vaultUnlocked.value) {
+        if (_vaultUnlocked.value && !_vaultDecoy.value) {
             _vaultItems.value = withContext(Dispatchers.IO) { vault.items() }
         }
     }
@@ -369,6 +674,19 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             val cover = items.maxBy { it.dateTaken }
             Album(id, cover.bucketName, cover.relativePath, cover, items.size)
         }.sortedByDescending { it.cover.dateTaken }
+
+    private fun buildMemories(list: List<MediaItem>): List<Memory> {
+        val zone = ZoneId.systemDefault()
+        val today = LocalDate.now(zone)
+        return list.mapNotNull { m ->
+            val d = Instant.ofEpochMilli(m.dateTaken).atZone(zone).toLocalDate()
+            if (d.monthValue == today.monthValue && d.dayOfMonth == today.dayOfMonth && d.year < today.year) {
+                (today.year - d.year) to m
+            } else null
+        }.groupBy({ it.first }, { it.second })
+            .map { (years, items) -> Memory(years, items.sortedBy { it.dateTaken }) }
+            .sortedBy { it.yearsAgo }
+    }
 
     private fun plural(n: Int, word: String) = if (n == 1) "1 $word" else "$n ${word}s"
 }

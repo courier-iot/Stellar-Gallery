@@ -1,8 +1,37 @@
-@file:OptIn(ExperimentalMaterial3Api::class)
+@file:OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
 
 package com.courieriot.stellargallery.ui
 
 import androidx.activity.compose.BackHandler
+import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material.icons.outlined.CloudUpload
+import androidx.compose.material.icons.outlined.FileCopy
+import androidx.compose.material.icons.outlined.Map
+import androidx.compose.material.icons.outlined.PieChart
+import androidx.compose.material.icons.outlined.Search
+import androidx.compose.material.icons.outlined.Slideshow
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
+import coil.compose.AsyncImage
+import coil.request.ImageRequest
+import com.courieriot.stellargallery.Memory
+import com.courieriot.stellargallery.ui.theme.Magenta
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
@@ -70,6 +99,9 @@ fun HomeScreen(vm: MainViewModel, nav: NavController) {
     val group by vm.groupByDate.collectAsStateWithLifecycle()
     val sort by vm.sortOrder.collectAsStateWithLifecycle()
     val loading by vm.loading.collectAsStateWithLifecycle()
+    val hideVault by vm.hideVaultEntry.collectAsStateWithLifecycle()
+    val memories by vm.memories.collectAsStateWithLifecycle()
+    val showMemories by vm.showMemories.collectAsStateWithLifecycle()
     var confirmEmpty by remember { mutableStateOf(false) }
 
     val list = when (tab) {
@@ -101,17 +133,39 @@ fun HomeScreen(vm: MainViewModel, nav: NavController) {
                     else MediaSelectionActions(vm, nav, selected)
                 }
             } else {
+                var menu by remember { mutableStateOf(false) }
                 TopAppBar(
-                    title = { BrandTitle() },
+                    title = {
+                        // Long-press the title to open the vault when its icon is hidden.
+                        Box(
+                            Modifier.combinedClickable(
+                                interactionSource = remember { MutableInteractionSource() },
+                                indication = null,
+                                onClick = {},
+                                onLongClick = { nav.navigate("vault") },
+                            ),
+                        ) { BrandTitle() }
+                    },
                     actions = {
                         if (tab == HomeTab.BIN && trash.isNotEmpty()) {
                             IconButton(onClick = { confirmEmpty = true }) { Icon(Icons.Outlined.DeleteForever, "Empty bin") }
                         }
-                        IconButton(onClick = { vm.sendQueue = emptyList(); nav.navigate("share") }) {
-                            Icon(Icons.Outlined.Wifi, "Wi-Fi share")
+                        IconButton(onClick = { nav.navigate("search") }) { Icon(Icons.Outlined.Search, "Search") }
+                        if (!hideVault) {
+                            IconButton(onClick = { nav.navigate("vault") }) { Icon(Icons.Outlined.Lock, "Vault") }
                         }
-                        IconButton(onClick = { nav.navigate("vault") }) { Icon(Icons.Outlined.Lock, "Vault") }
-                        IconButton(onClick = { nav.navigate("settings") }) { Icon(Icons.Outlined.Settings, "Settings") }
+                        Box {
+                            IconButton(onClick = { menu = true }) { Icon(Icons.Filled.MoreVert, "More") }
+                            DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
+                                MenuRow(Icons.Outlined.Wifi, "Wi-Fi share") { menu = false; vm.sendQueue = emptyList(); nav.navigate("share") }
+                                MenuRow(Icons.Outlined.Slideshow, "Slideshow") { menu = false; nav.navigate("slideshow/all/0") }
+                                MenuRow(Icons.Outlined.Map, "Photo map") { menu = false; nav.navigate("map") }
+                                MenuRow(Icons.Outlined.FileCopy, "Find duplicates") { menu = false; nav.navigate("duplicates") }
+                                MenuRow(Icons.Outlined.PieChart, "Storage") { menu = false; nav.navigate("storage") }
+                                MenuRow(Icons.Outlined.CloudUpload, "Backup") { menu = false; nav.navigate("backup") }
+                                MenuRow(Icons.Outlined.Settings, "Settings") { menu = false; nav.navigate("settings") }
+                            }
+                        }
                     },
                     colors = TopAppBarDefaults.topAppBarColors(containerColor = Color.Transparent),
                 )
@@ -162,6 +216,16 @@ fun HomeScreen(vm: MainViewModel, nav: NavController) {
                         },
                         onOpen = { idx -> nav.navigate("viewer/$source/$idx") },
                         onToggle = vm::toggleSelection,
+                        onSelectionChange = vm::setSelection,
+                        onColumnsChange = vm::setGridColumns,
+                        header = if (tab == HomeTab.PHOTOS && showMemories && memories.isNotEmpty()) {
+                            {
+                                MemoriesRow(memories) { m ->
+                                    val src = vm.setCustomList("memories", m.items.map { it.id })
+                                    nav.navigate("viewer/$src/0")
+                                }
+                            }
+                        } else null,
                     )
                 }
             }
@@ -217,6 +281,16 @@ fun AlbumScreen(vm: MainViewModel, nav: NavController, bucketId: Long) {
                     navigationIcon = {
                         IconButton(onClick = { nav.popBackStack() }) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back") }
                     },
+                    actions = {
+                        if (items.any { !it.isVideo }) {
+                            IconButton(onClick = { nav.navigate("slideshow/a$bucketId/0") }) {
+                                Icon(Icons.Outlined.Slideshow, "Slideshow")
+                            }
+                        }
+                        IconButton(onClick = { vm.sendQueue = items; nav.navigate("share") }) {
+                            Icon(Icons.Outlined.Wifi, "Send album over Wi-Fi")
+                        }
+                    },
                     colors = TopAppBarDefaults.topAppBarColors(containerColor = Color.Transparent),
                 )
             }
@@ -231,7 +305,59 @@ fun AlbumScreen(vm: MainViewModel, nav: NavController, bucketId: Long) {
                 emptyText = "This album is empty.",
                 onOpen = { idx -> nav.navigate("viewer/a$bucketId/$idx") },
                 onToggle = vm::toggleSelection,
+                onSelectionChange = vm::setSelection,
+                onColumnsChange = vm::setGridColumns,
             )
+        }
+    }
+}
+
+@Composable
+fun MenuRow(icon: ImageVector, label: String, onClick: () -> Unit) {
+    DropdownMenuItem(text = { Text(label) }, leadingIcon = { Icon(icon, null) }, onClick = onClick)
+}
+
+@Composable
+private fun MemoriesRow(memories: List<Memory>, onOpen: (Memory) -> Unit) {
+    Column(Modifier.padding(top = 4.dp, bottom = 8.dp)) {
+        Text(
+            "On this day",
+            style = MaterialTheme.typography.titleMedium,
+            color = Neon,
+            modifier = Modifier.padding(start = 8.dp, bottom = 8.dp),
+        )
+        LazyRow(
+            horizontalArrangement = Arrangement.spacedBy(10.dp),
+            contentPadding = PaddingValues(horizontal = 6.dp),
+        ) {
+            items(memories, key = { it.yearsAgo }) { m ->
+                Box(
+                    Modifier
+                        .size(width = 150.dp, height = 190.dp)
+                        .clip(RoundedCornerShape(16.dp))
+                        .border(1.dp, Brush.linearGradient(listOf(Neon, Magenta)), RoundedCornerShape(16.dp))
+                        .clickable { onOpen(m) },
+                ) {
+                    AsyncImage(
+                        model = ImageRequest.Builder(LocalContext.current).data(m.items.first().uri).size(480).build(),
+                        contentDescription = null,
+                        contentScale = ContentScale.Crop,
+                        modifier = Modifier.fillMaxSize().background(Panel),
+                    )
+                    Box(
+                        Modifier
+                            .fillMaxSize()
+                            .background(Brush.verticalGradient(listOf(Color.Transparent, Color.Black.copy(alpha = 0.75f)))),
+                    )
+                    Column(Modifier.align(Alignment.BottomStart).padding(10.dp)) {
+                        Text(
+                            if (m.yearsAgo == 1) "1 year ago" else "${m.yearsAgo} years ago",
+                            color = Color.White, style = MaterialTheme.typography.titleSmall,
+                        )
+                        Text("${m.items.size} items", color = Color.White.copy(alpha = 0.75f), style = MaterialTheme.typography.labelSmall)
+                    }
+                }
+            }
         }
     }
 }

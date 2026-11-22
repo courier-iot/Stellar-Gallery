@@ -33,6 +33,21 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.GridItemSpan
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
+import androidx.compose.foundation.lazy.grid.rememberLazyGridState
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.calculateZoom
+import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
+import androidx.compose.foundation.gestures.scrollBy
+import androidx.compose.ui.input.pointer.PointerEventPass
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.rememberUpdatedState
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
@@ -119,8 +134,8 @@ fun BrandTitle(text: String = "STELLAR GALLERY") {
 }
 
 @Composable
-fun EmptyState(text: String, modifier: Modifier = Modifier) {
-    Box(modifier.fillMaxSize().padding(32.dp), contentAlignment = Alignment.Center) {
+fun EmptyState(text: String, modifier: Modifier = Modifier.fillMaxSize()) {
+    Box(modifier.fillMaxWidth().padding(32.dp), contentAlignment = Alignment.Center) {
         Text(text, textAlign = TextAlign.Center, color = MaterialTheme.colorScheme.onSurfaceVariant)
     }
 }
@@ -181,18 +196,103 @@ fun MediaGrid(
     emptyText: String,
     onOpen: (Int) -> Unit,
     onToggle: (Long) -> Unit,
+    onSelectionChange: (Set<Long>) -> Unit,
+    onColumnsChange: ((Int) -> Unit)? = null,
     showExpiry: Boolean = false,
+    header: (@Composable () -> Unit)? = null,
 ) {
-    if (items.isEmpty()) { EmptyState(emptyText); return }
+    if (items.isEmpty() && header == null) { EmptyState(emptyText); return }
     val entries = remember(items, groupByDate) { buildEntries(items, groupByDate) }
+    val ids = remember(items) { items.map { it.id } }
+    val indexOf = remember(items) { HashMap<Long, Int>(items.size * 2).apply { items.forEachIndexed { i, m -> put(m.id, i) } } }
+    val state = rememberLazyGridState()
     val selecting = selection.isNotEmpty()
+
+    val autoScroll = remember { mutableFloatStateOf(0f) }
+    LaunchedEffect(autoScroll.floatValue) {
+        val speed = autoScroll.floatValue
+        if (speed != 0f) while (isActive) { state.scrollBy(speed); delay(16) }
+    }
+    val curSelection by rememberUpdatedState(selection)
+    val curSelChange by rememberUpdatedState(onSelectionChange)
+    val curColumns by rememberUpdatedState(columns)
+    val curColChange by rememberUpdatedState(onColumnsChange)
+    val curIds by rememberUpdatedState(ids)
+    val curIndex by rememberUpdatedState(indexOf)
+    val edgePx = with(LocalDensity.current) { 64.dp.toPx() }
+
     LazyVerticalGrid(
+        state = state,
         columns = GridCells.Fixed(columns),
         contentPadding = PaddingValues(start = 3.dp, end = 3.dp, bottom = 24.dp),
         horizontalArrangement = Arrangement.spacedBy(3.dp),
         verticalArrangement = Arrangement.spacedBy(3.dp),
-        modifier = Modifier.fillMaxSize(),
+        modifier = Modifier
+            .fillMaxSize()
+            // Pinch with two fingers to change how many photos fit per row.
+            .pointerInput(Unit) {
+                awaitEachGesture {
+                    awaitFirstDown(requireUnconsumed = false)
+                    var acc = 1f
+                    do {
+                        val ev = awaitPointerEvent(PointerEventPass.Initial)
+                        val cb = curColChange
+                        if (cb != null && ev.changes.count { it.pressed } >= 2) {
+                            acc *= ev.calculateZoom()
+                            if (acc > 1.3f) { cb(curColumns - 1); acc = 1f }
+                            else if (acc < 0.77f) { cb(curColumns + 1); acc = 1f }
+                            ev.changes.forEach { it.consume() }
+                        }
+                    } while (ev.changes.any { it.pressed })
+                }
+            }
+            // Long-press then drag to select a range.
+            .pointerInput(Unit) {
+                var anchor = -1
+                var base: Set<Long> = emptySet()
+                fun idAt(p: Offset): Long? = state.layoutInfo.visibleItemsInfo.firstOrNull { info ->
+                    p.x >= info.offset.x && p.x <= info.offset.x + info.size.width &&
+                        p.y >= info.offset.y && p.y <= info.offset.y + info.size.height
+                }?.key as? Long
+                detectDragGesturesAfterLongPress(
+                    onDragStart = { p ->
+                        val id = idAt(p)
+                        if (id != null) {
+                            anchor = curIndex[id] ?: -1
+                            base = curSelection
+                            curSelChange(base + id)
+                        }
+                    },
+                    onDragEnd = { anchor = -1; autoScroll.floatValue = 0f },
+                    onDragCancel = { anchor = -1; autoScroll.floatValue = 0f },
+                    onDrag = { change, _ ->
+                        if (anchor >= 0) {
+                            change.consume()
+                            val y = change.position.y
+                            autoScroll.floatValue = when {
+                                y > size.height - edgePx -> 14f
+                                y < edgePx -> -14f
+                                else -> 0f
+                            }
+                            val cur = idAt(change.position)?.let { curIndex[it] }
+                            if (cur != null) {
+                                val lo = minOf(anchor, cur)
+                                val hi = maxOf(anchor, cur)
+                                curSelChange(base + curIds.subList(lo, hi + 1))
+                            }
+                        }
+                    },
+                )
+            },
     ) {
+        if (header != null) {
+            item(key = "header", span = { GridItemSpan(maxLineSpan) }) { header() }
+        }
+        if (items.isEmpty()) {
+            item(key = "empty", span = { GridItemSpan(maxLineSpan) }) {
+                EmptyState(emptyText, Modifier.height(260.dp))
+            }
+        }
         items(
             items = entries,
             key = { it.key },
@@ -211,7 +311,6 @@ fun MediaGrid(
                     selectionMode = selecting,
                     showExpiry = showExpiry,
                     onClick = { if (selecting) onToggle(e.item.id) else onOpen(e.index) },
-                    onLongClick = { onToggle(e.item.id) },
                 )
             }
         }
@@ -225,7 +324,6 @@ fun MediaThumb(
     selectionMode: Boolean,
     showExpiry: Boolean,
     onClick: () -> Unit,
-    onLongClick: () -> Unit,
 ) {
     val context = LocalContext.current
     val inset by animateDpAsState(if (selected) 8.dp else 0.dp, label = "inset")
@@ -233,7 +331,7 @@ fun MediaThumb(
     Box(
         Modifier
             .aspectRatio(1f)
-            .combinedClickable(onClick = onClick, onLongClick = onLongClick),
+            .clickable(onClick = onClick),
     ) {
         AsyncImage(
             model = ImageRequest.Builder(context).data(item.uri).size(360).build(),
@@ -352,7 +450,7 @@ fun RowScope.MediaSelectionActions(vm: MainViewModel, nav: NavController, items:
     var picker by remember { mutableStateOf<PickMode?>(null) }
     val allFav = items.isNotEmpty() && items.all { it.isFavorite }
 
-    IconButton(onClick = { shareItems(context, items) }) { Icon(Icons.Outlined.Share, "Share") }
+    IconButton(onClick = { vm.shareMedia(context, items) }) { Icon(Icons.Outlined.Share, "Share") }
     IconButton(onClick = { vm.setFavorite(items, !allFav) }) {
         Icon(if (allFav) Icons.Filled.Favorite else Icons.Outlined.FavoriteBorder, "Favorite", tint = if (allFav) Magenta else Color.White)
     }
@@ -460,27 +558,6 @@ fun AlbumPickerDialog(albums: List<Album>, title: String, onPick: (String) -> Un
 }
 
 // ---------------- Utilities ----------------
-
-fun shareItems(context: Context, items: List<MediaItem>) {
-    if (items.isEmpty()) return
-    val uris = ArrayList<Uri>(items.map { it.uri })
-    val type = when {
-        items.none { it.isVideo } -> "image/*"
-        items.all { it.isVideo } -> "video/*"
-        else -> "*/*"
-    }
-    val intent = if (uris.size == 1) {
-        Intent(Intent.ACTION_SEND).putExtra(Intent.EXTRA_STREAM, uris[0])
-    } else {
-        Intent(Intent.ACTION_SEND_MULTIPLE).putParcelableArrayListExtra(Intent.EXTRA_STREAM, uris)
-    }
-    intent.type = type
-    intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-    intent.clipData = ClipData.newUri(context.contentResolver, "media", uris[0]).apply {
-        uris.drop(1).forEach { addItem(ClipData.Item(it)) }
-    }
-    runCatching { context.startActivity(Intent.createChooser(intent, "Share")) }
-}
 
 fun openUrl(context: Context, url: String) {
     runCatching { context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url))) }

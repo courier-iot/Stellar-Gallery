@@ -2,6 +2,7 @@
 
 package com.courieriot.stellargallery.ui
 
+import android.app.WallpaperManager
 import android.net.Uri
 import android.view.View
 import androidx.compose.animation.AnimatedVisibility
@@ -30,6 +31,13 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.PlayCircle
+import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material.icons.outlined.ContentCut
+import androidx.compose.material.icons.outlined.PhotoCamera
+import androidx.compose.material.icons.outlined.Slideshow
+import androidx.compose.material.icons.outlined.Wallpaper
+import androidx.compose.material.icons.outlined.Wifi
+import androidx.compose.material3.DropdownMenu
 import androidx.compose.material.icons.outlined.Delete
 import androidx.compose.material.icons.outlined.DeleteForever
 import androidx.compose.material.icons.outlined.Edit
@@ -101,6 +109,8 @@ fun ViewerScreen(vm: MainViewModel, nav: NavController, source: String, startInd
     val current = list[pager.currentPage.coerceIn(0, list.lastIndex)]
     var chrome by remember { mutableStateOf(true) }
     var showInfo by remember { mutableStateOf(false) }
+    var menu by remember { mutableStateOf(false) }
+    var wallpaperFor by remember { mutableStateOf<MediaItem?>(null) }
     val isTrash = source == "trash"
 
     Box(Modifier.fillMaxSize().background(Color.Black)) {
@@ -146,7 +156,32 @@ fun ViewerScreen(vm: MainViewModel, nav: NavController, source: String, startInd
                     )
                     Text(fullDate(current.dateTaken), color = Color.White.copy(alpha = 0.7f), style = MaterialTheme.typography.labelSmall)
                 }
+                if (!isTrash && !current.isVideo) {
+                    IconButton(onClick = { nav.navigate("slideshow/$source/${pager.currentPage}") }) {
+                        Icon(Icons.Outlined.Slideshow, "Slideshow", tint = Color.White)
+                    }
+                }
                 IconButton(onClick = { showInfo = true }) { Icon(Icons.Outlined.Info, "Details", tint = Color.White) }
+                if (!isTrash) {
+                    Box {
+                        IconButton(onClick = { menu = true }) { Icon(Icons.Filled.MoreVert, "More", tint = Color.White) }
+                        DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
+                            if (current.isVideo) {
+                                MenuRow(Icons.Outlined.ContentCut, "Trim video") {
+                                    menu = false; vm.videoEditTarget = current; nav.navigate("videoEdit")
+                                }
+                                MenuRow(Icons.Outlined.PhotoCamera, "Save a frame") {
+                                    menu = false; vm.videoEditTarget = current; nav.navigate("videoEdit")
+                                }
+                            } else {
+                                MenuRow(Icons.Outlined.Wallpaper, "Set as wallpaper") { menu = false; wallpaperFor = current }
+                            }
+                            MenuRow(Icons.Outlined.Wifi, "Send over Wi-Fi") {
+                                menu = false; vm.sendQueue = listOf(current); nav.navigate("share")
+                            }
+                        }
+                    }
+                }
             }
         }
 
@@ -166,7 +201,7 @@ fun ViewerScreen(vm: MainViewModel, nav: NavController, source: String, startInd
                     ViewerAction(Icons.Outlined.Restore, "Restore") { vm.restore(listOf(current)) }
                     ViewerAction(Icons.Outlined.DeleteForever, "Delete") { vm.deleteForever(listOf(current)) }
                 } else {
-                    ViewerAction(Icons.Outlined.Share, "Share") { shareItems(context, listOf(current)) }
+                    ViewerAction(Icons.Outlined.Share, "Share") { vm.shareMedia(context, listOf(current)) }
                     ViewerAction(
                         if (current.isFavorite) Icons.Filled.Favorite else Icons.Outlined.FavoriteBorder,
                         "Favorite",
@@ -183,6 +218,24 @@ fun ViewerScreen(vm: MainViewModel, nav: NavController, source: String, startInd
     }
 
     if (showInfo) InfoDialog(current) { showInfo = false }
+    wallpaperFor?.let { item ->
+        AlertDialog(
+            onDismissRequest = { wallpaperFor = null },
+            title = { Text("Set as wallpaper") },
+            text = {
+                Column {
+                    listOf(
+                        "Home screen" to WallpaperManager.FLAG_SYSTEM,
+                        "Lock screen" to WallpaperManager.FLAG_LOCK,
+                        "Both" to (WallpaperManager.FLAG_SYSTEM or WallpaperManager.FLAG_LOCK),
+                    ).forEach { (label, flag) ->
+                        TextButton(onClick = { vm.setWallpaper(item, flag); wallpaperFor = null }) { Text(label) }
+                    }
+                }
+            },
+            confirmButton = { TextButton(onClick = { wallpaperFor = null }) { Text("Cancel") } },
+        )
+    }
 }
 
 @Composable

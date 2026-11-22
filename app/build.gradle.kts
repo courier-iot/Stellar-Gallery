@@ -5,7 +5,7 @@ plugins {
 }
 
 // Bump this for every release. The workflow reads it to tag the GitHub release (vX.Y.Z).
-val appVersion = "1.0.0"
+val appVersion = "2.0.0"
 
 val versionParts = appVersion.split(".").map { it.toIntOrNull() ?: 0 }
 val computedVersionCode = versionParts.getOrElse(0) { 0 } * 10000 +
@@ -95,4 +95,12 @@ dependencies {
     implementation("io.coil-kt:coil-video:2.7.0")
     implementation("androidx.media3:media3-exoplayer:1.5.1")
     implementation("androidx.media3:media3-ui:1.5.1")
+    implementation("androidx.media3:media3-transformer:1.5.1")
+
+    // v2.0.0
+    implementation("androidx.exifinterface:exifinterface:1.3.7")
+    implementation("org.osmdroid:osmdroid-android:6.1.20")       // OpenStreetMap (no Google Maps)
+    implementation("com.google.zxing:core:3.5.3")               // QR codes (open-source library, no services)
+    implementation("com.journeyapps:zxing-android-embedded:4.3.0") { isTransitive = false }
+    implementation("com.squareup.okhttp3:okhttp:4.12.0")        // WebDAV backup
 }

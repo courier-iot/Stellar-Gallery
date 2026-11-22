@@ -76,7 +76,7 @@ fun hasMediaPermission(context: Context): Boolean {
 }
 
 @Composable
-fun StellarRoot(vm: MainViewModel) {
+fun StellarRoot(vm: MainViewModel, onCloseExternal: () -> Unit = {}) {
     val context = LocalContext.current
     val nav = rememberNavController()
     val snackbar = remember { SnackbarHostState() }
@@ -120,12 +120,13 @@ fun StellarRoot(vm: MainViewModel) {
     }
 
     val update by vm.updateAvailable.collectAsStateWithLifecycle()
+    val external by vm.external.collectAsStateWithLifecycle()
 
     Box(Modifier.fillMaxSize()) {
         Starfield()
-        if (!granted) {
+        if (!granted && external == null) {
             PermissionScreen { permLauncher.launch(mediaPermissions()) }
-        } else {
+        } else if (granted) {
             NavHost(navController = nav, startDestination = "home") {
                 composable("home") { HomeScreen(vm, nav) }
                 composable(
@@ -153,7 +154,29 @@ fun StellarRoot(vm: MainViewModel) {
                 ) { e -> VaultViewerScreen(vm, nav, e.arguments?.getInt("index") ?: 0) }
                 composable("share") { ShareScreen(vm, nav) }
                 composable("settings") { SettingsScreen(vm, nav) }
+                composable("search") { SearchScreen(vm, nav) }
+                composable(
+                    "slideshow/{source}/{index}",
+                    arguments = listOf(
+                        navArgument("source") { type = NavType.StringType },
+                        navArgument("index") { type = NavType.IntType },
+                    ),
+                ) { e ->
+                    SlideshowScreen(
+                        vm, nav,
+                        source = e.arguments?.getString("source") ?: "all",
+                        startIndex = e.arguments?.getInt("index") ?: 0,
+                    )
+                }
+                composable("duplicates") { DuplicatesScreen(vm, nav) }
+                composable("storage") { StorageScreen(vm, nav) }
+                composable("map") { MapScreen(vm, nav) }
+                composable("videoEdit") { VideoEditScreen(vm, nav) }
+                composable("backup") { BackupScreen(vm, nav) }
             }
+        }
+        external?.let { ext ->
+            ExternalViewer(ext, onClose = { vm.closeExternal(); onCloseExternal() })
         }
         SnackbarHost(
             snackbar,

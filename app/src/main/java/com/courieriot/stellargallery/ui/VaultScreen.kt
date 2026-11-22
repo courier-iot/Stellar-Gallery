@@ -26,6 +26,7 @@ import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -295,6 +296,9 @@ private fun VaultContent(vm: MainViewModel, nav: NavController) {
     var menu by remember { mutableStateOf(false) }
     var changePin by remember { mutableStateOf(false) }
     var confirmDelete by remember { mutableStateOf(false) }
+    var decoyDialog by remember { mutableStateOf(false) }
+    var logDialog by remember { mutableStateOf(false) }
+    val decoy by vm.vaultDecoy.collectAsStateWithLifecycle()
     val canBio = remember(context) {
         BiometricManager.from(context).canAuthenticate(BiometricManager.Authenticators.BIOMETRIC_WEAK) ==
             BiometricManager.BIOMETRIC_SUCCESS
@@ -321,10 +325,15 @@ private fun VaultContent(vm: MainViewModel, nav: NavController) {
                     },
                     actions = {
                         IconButton(onClick = { vm.lockVault() }) { Icon(Icons.Outlined.Lock, "Lock vault") }
-                        Box {
+                        if (!decoy) Box {
                             IconButton(onClick = { menu = true }) { Icon(Icons.Filled.MoreVert, "More") }
                             DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
                                 DropdownMenuItem(text = { Text("Change PIN") }, onClick = { menu = false; changePin = true })
+                                DropdownMenuItem(
+                                    text = { Text(if (vm.vaultHasDecoy()) "Decoy PIN (on)" else "Decoy PIN…") },
+                                    onClick = { menu = false; decoyDialog = true },
+                                )
+                                DropdownMenuItem(text = { Text("Unlock log") }, onClick = { menu = false; logDialog = true })
                                 if (canBio) {
                                     DropdownMenuItem(
                                         text = { Text("Unlock with fingerprint") },
@@ -380,6 +389,44 @@ private fun VaultContent(vm: MainViewModel, nav: NavController) {
         )
     }
     if (changePin) ChangePinDialog(onDismiss = { changePin = false }) { vm.changeVaultPin(it); changePin = false }
+    if (decoyDialog) {
+        ChangePinDialog(
+            title = "Decoy PIN",
+            note = "Entering this PIN opens an empty vault, so nobody can tell your real photos are there.",
+            onDismiss = { decoyDialog = false },
+            onRemove = if (vm.vaultHasDecoy()) ({ vm.setDecoyPin(null); decoyDialog = false }) else null,
+        ) { vm.setDecoyPin(it); decoyDialog = false }
+    }
+    if (logDialog) {
+        val attempts = remember { vm.vaultAttempts() }
+        AlertDialog(
+            onDismissRequest = { logDialog = false },
+            title = { Text("Unlock log") },
+            text = {
+                if (attempts.isEmpty()) {
+                    Text("No failed or decoy attempts recorded.")
+                } else {
+                    androidx.compose.foundation.lazy.LazyColumn(Modifier.heightIn(max = 360.dp)) {
+                        items(attempts.size) { i ->
+                            val a = attempts[i]
+                            Row(Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
+                                Text(
+                                    if (a.kind == "decoy") "Decoy PIN used" else "Wrong PIN",
+                                    color = if (a.kind == "decoy") Neon else Magenta,
+                                    modifier = Modifier.weight(1f),
+                                )
+                                Text(fullDate(a.time), style = MaterialTheme.typography.labelSmall)
+                            }
+                        }
+                    }
+                }
+            },
+            confirmButton = { TextButton(onClick = { logDialog = false }) { Text("Close") } },
+            dismissButton = {
+                if (attempts.isNotEmpty()) TextButton(onClick = { vm.clearVaultAttempts(); logDialog = false }) { Text("Clear") }
+            },
+        )
+    }
 }
 
 @Composable
@@ -394,15 +441,22 @@ fun BusyCard(text: String, modifier: Modifier = Modifier) {
 }
 
 @Composable
-private fun ChangePinDialog(onDismiss: () -> Unit, onSave: (String) -> Unit) {
+private fun ChangePinDialog(
+    title: String = "Change vault PIN",
+    note: String? = null,
+    onDismiss: () -> Unit,
+    onRemove: (() -> Unit)? = null,
+    onSave: (String) -> Unit,
+) {
     var a by remember { mutableStateOf("") }
     var b by remember { mutableStateOf("") }
     val valid = a.length in 4..8 && a == b
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("Change vault PIN") },
+        title = { Text(title) },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                note?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
                 OutlinedTextField(
                     value = a, onValueChange = { v -> a = v.filter(Char::isDigit).take(8) },
                     label = { Text("New PIN") }, singleLine = true,
@@ -419,7 +473,12 @@ private fun ChangePinDialog(onDismiss: () -> Unit, onSave: (String) -> Unit) {
             }
         },
         confirmButton = { Button(onClick = { onSave(a) }, enabled = valid) { Text("Save") } },
-        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
+        dismissButton = {
+            Row {
+                onRemove?.let { TextButton(onClick = it) { Text("Remove") } }
+                TextButton(onClick = onDismiss) { Text("Cancel") }
+            }
+        },
     )
 }
 

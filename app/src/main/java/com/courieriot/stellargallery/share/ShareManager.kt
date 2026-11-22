@@ -26,7 +26,10 @@ import java.io.DataOutputStream
 import java.io.EOFException
 import java.io.IOException
 import java.io.InputStream
+import java.io.File
+import java.net.Inet4Address
 import java.net.InetAddress
+import java.net.NetworkInterface
 import java.net.InetSocketAddress
 import java.net.ServerSocket
 import java.net.Socket
@@ -55,13 +58,21 @@ data class TransferProgress(
 
 private const val SERVICE_TYPE = "_stellargallery._tcp."
 private const val SERVICE_PREFIX = "Stellar Gallery · "
-private const val MAGIC = 0x53475631 // "SGV1"
+private const val MAGIC = 0x53475632 // "SGV2" — per-file skip so interrupted transfers resume
 
 /**
  * Phone-to-phone sharing on the same Wi-Fi. Uses Android's built-in network service discovery (mDNS)
  * and a direct socket — nothing leaves your local network.
  */
 class ShareManager(context: Context, private val repo: MediaRepository) {
+    private val receivedLog = File(context.filesDir, "received.log")
+    private val receivedKeys: HashSet<String> by lazy {
+        runCatching { receivedLog.readLines().toHashSet() }.getOrDefault(HashSet())
+    }
+
+    /** "sg://ip:port" while receiving — shown as a QR code for direct pairing. */
+    val pairingCode = MutableStateFlow<String?>(null)
+
     private val nsd = context.getSystemService(NsdManager::class.java)
     private val wifi = context.applicationContext.getSystemService(WifiManager::class.java)
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
@@ -115,6 +126,7 @@ class ShareManager(context: Context, private val repo: MediaRepository) {
         regListener = listener
         runCatching { nsd.registerService(info, NsdManager.PROTOCOL_DNS_SD, listener) }
         receiving.value = true
+        pairingCode.value = localIpv4()?.let { "sg://${it.hostAddress}:${ss.localPort}" }
         scope.launch {
             while (isActive && !ss.isClosed) {
                 val socket = try { ss.accept() } catch (e: IOException) { break }
@@ -130,6 +142,7 @@ class ShareManager(context: Context, private val repo: MediaRepository) {
         runCatching { server?.close() }
         server = null
         receiving.value = false
+        pairingCode.value = null
         incoming.value?.answer?.complete(false)
         incoming.value = null
         releaseLockIfIdle()
@@ -163,7 +176,16 @@ class ShareManager(context: Context, private val repo: MediaRepository) {
                         val name = sanitize(input.readUTF())
                         val mime = input.readUTF()
                         val size = input.readLong()
+                        val fileKey = sender + "|" + input.readUTF()
                         val label = "Receiving ${idx + 1} of $count from $sender"
+                        val already = synchronized(receivedKeys) { fileKey in receivedKeys }
+                        output.writeBoolean(already) // true = skip, we already have it
+                        output.flush()
+                        if (already) {
+                            done += size
+                            progress.value = TransferProgress("$label (already received)", done, total)
+                            continue
+                        }
                         progress.value = TransferProgress(label, done, total)
                         val limited = LimitedInputStream(input, size) { n ->
                             done += n
@@ -172,10 +194,16 @@ class ShareManager(context: Context, private val repo: MediaRepository) {
                                 progress.value = TransferProgress(label, done, total)
                             }
                         }
+                        var saved = false
                         if (mime.startsWith("image/") || mime.startsWith("video/")) {
-                            runCatching { repo.insertStream(name, mime, MediaRepository.RECEIVED_PATH, limited) }
+                            saved = runCatching { repo.insertStream(name, mime, MediaRepository.RECEIVED_PATH, limited) != null }
+                                .getOrDefault(false)
                         }
                         limited.drain()
+                        if (saved) synchronized(receivedKeys) {
+                            receivedKeys += fileKey
+                            runCatching { receivedLog.appendText(fileKey + "\n") }
+                        }
                     }
                     output.writeBoolean(true)
                     output.flush()
@@ -269,6 +297,13 @@ class ShareManager(context: Context, private val repo: MediaRepository) {
                         out.writeUTF(item.name.take(200))
                         out.writeUTF(item.mimeType)
                         out.writeLong(size)
+                        out.writeUTF("${item.id}:$size:${item.dateTaken}")
+                        out.flush()
+                        if (input.readBoolean()) {
+                            done += size
+                            progress.value = TransferProgress("$label (already on ${peer.displayName})", done, total)
+                            return@forEachIndexed
+                        }
                         var remaining = size
                         repo.openInput(item.uri)?.use { src ->
                             while (remaining > 0) {
@@ -325,6 +360,21 @@ class ShareManager(context: Context, private val repo: MediaRepository) {
             multicastLock = null
         }
     }
+
+    /** Turns a scanned "sg://ip:port" code into a peer. */
+    fun peerFromCode(code: String): Peer? = runCatching {
+        val rest = code.trim().removePrefix("sg://")
+        val host = rest.substringBeforeLast(':')
+        val port = rest.substringAfterLast(':').toInt()
+        Peer(SERVICE_PREFIX + "Paired phone ($host)", InetAddress.getByName(host), port)
+    }.getOrNull()
+
+    private fun localIpv4(): InetAddress? = runCatching {
+        NetworkInterface.getNetworkInterfaces().toList()
+            .filter { it.isUp && !it.isLoopback }
+            .flatMap { it.inetAddresses.toList() }
+            .firstOrNull { it is Inet4Address && it.isSiteLocalAddress }
+    }.getOrNull()
 
     private fun sanitize(name: String): String =
         name.replace(Regex("[/\\\\:*?\"<>|\\u0000]"), "_").trim().take(120).ifBlank { "file" }

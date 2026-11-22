@@ -175,7 +175,28 @@ class MediaRepository(context: Context) {
 
     fun openInput(uri: Uri): InputStream? = resolver.openInputStream(uri)
 
+    /** Picks a random photo for the widget. Blocking. */
+    fun randomPhoto(favoritesOnly: Boolean): Uri? {
+        fun pick(onlyFav: Boolean): Uri? {
+            val args = Bundle().apply {
+                putInt(MediaStore.QUERY_ARG_MATCH_TRASHED, MediaStore.MATCH_EXCLUDE)
+                putInt(MediaStore.QUERY_ARG_MATCH_PENDING, MediaStore.MATCH_EXCLUDE)
+                if (onlyFav) putInt(MediaStore.QUERY_ARG_MATCH_FAVORITE, MediaStore.MATCH_ONLY)
+            }
+            val ids = ArrayList<Long>()
+            runCatching {
+                resolver.query(imagesUri, arrayOf(BaseColumns._ID), args, null)?.use { c ->
+                    while (c.moveToNext()) ids += c.getLong(0)
+                }
+            }
+            if (ids.isEmpty()) return null
+            return ContentUris.withAppendedId(imagesUri, ids.random())
+        }
+        return (if (favoritesOnly) pick(true) else null) ?: pick(false)
+    }
+
     companion object {
+        const val MOVIES_PATH = "Movies/Stellar Gallery/"
         const val EDITS_PATH = "Pictures/Stellar Gallery/"
         const val RECEIVED_PATH = "Pictures/Stellar Gallery/Received/"
         const val RESTORED_PATH = "Pictures/Stellar Gallery/Restored/"
