@@ -49,6 +49,11 @@ data class SmartAlbum(
 
 data class SmartAlbumView(val album: SmartAlbum, val ids: List<Long>)
 
+/** A "is this right?" question for the trainer. */
+data class TrainerCard(val photoId: Long, val albumId: String, val albumName: String)
+
+data class TrainerAnswer(val photoId: Long, val albumId: String, val yes: Boolean)
+
 sealed interface SearchModelState {
     data object NotInstalled : SearchModelState
     data class Downloading(val progress: Float) : SearchModelState
@@ -65,6 +70,8 @@ data class SorterState(
     val photoCount: Int = 0,
     val albums: List<SmartAlbumView> = emptyList(),
     val search: SearchModelState = SearchModelState.NotInstalled,
+    val unsureCount: Int = 0,
+    val simplified: Boolean = true,
 )
 
 /**
@@ -78,7 +85,12 @@ class Sorter(private val context: Context) {
     private val engine = SorterEngine(context)
     private val dir = File(context.filesDir, "sorter").apply { mkdirs() }
     private val albumsFile = File(dir, "albums.json")
-    private val embFile = File(dir, "emb.bin")
+    private val embFile: File get() = File(dir, "emb-${engine.modelId}.bin")
+    @Volatile private var trainerPool: List<TrainerCard> = emptyList()
+
+    /** Simplified folders: broader albums (People, Pets & animals…) instead of detailed ones. */
+    @Volatile var simplified: Boolean = true
+        private set
 
     val state = MutableStateFlow(SorterState())
 
@@ -96,7 +108,7 @@ class Sorter(private val context: Context) {
         state.update {
             it.copy(
                 search = if (engine.searchModelInstalled()) SearchModelState.Ready else SearchModelState.NotInstalled,
-                albums = albums.map { a -> SmartAlbumView(a, emptyList()) },
+                albums = albums.filter { a -> visible(a) }.map { a -> SmartAlbumView(a, emptyList()) },
             )
         }
     }
@@ -127,7 +139,7 @@ class Sorter(private val context: Context) {
                         if (v != null && v.size == engine.dim) {
                             embeddings[m.id] = v
                             embSizes[m.id] = m.size
-                            pending += m to v
+                            pending.add(m to v)
                         } else {
                             // Remember unreadable items so we don't retry them every time.
                             embSizes[m.id] = m.size
@@ -158,70 +170,99 @@ class Sorter(private val context: Context) {
         classifyMutex.withLock {
             val items = media
             val current = synchronized(albumsLock) { albums }
-            val active = current.filter { it.status != AlbumStatus.DISMISSED }
+            val shown = current.filter { visible(it) }
+            val active = shown.filter { it.status != AlbumStatus.DISMISSED }
+            val byKey = current.associateBy { it.key }
 
-            // Text anchors: every starter category (even dismissed ones, so they still "compete")
-            // plus your own described albums.
-            val anchors = ArrayList<Pair<SmartAlbum?, FloatArray>>()
-            engine.categories.forEach { c -> anchors += current.firstOrNull { it.key == c.key } to c.emb }
-            current.filter { it.key == null && !it.prompt.isNullOrBlank() && it.status != AlbumStatus.DISMISSED }
-                .forEach { a -> promptVector(a.prompt!!)?.let { anchors += a to it } }
+            // Text anchors: every starter category, pointed at its album for the current mode.
+            // Dismissed ones still take part, so their photos don't leak into other albums.
+            class Anchor(val key: String?, val album: SmartAlbum?, val vec: FloatArray)
+            val anchors = ArrayList<Anchor>()
+            engine.categories.forEach { c ->
+                val target = if (simplified) byKey["g:" + c.group] else byKey[c.key]
+                anchors += Anchor(c.key, target, c.emb)
+            }
+            active.filter { it.key == null && !it.prompt.isNullOrBlank() }
+                .forEach { a -> promptVector(a.prompt!!)?.let { anchors += Anchor(null, a, it) } }
 
-            // Explicitly taught photos
+            // What you taught it: photos added (+) and removed (−)
             val explicit = HashMap<Long, SmartAlbum>()
             active.sortedBy { if (it.status == AlbumStatus.APPROVED) 0 else 1 }.forEach { a ->
                 a.includes.forEach { id -> explicit.putIfAbsent(id, a) }
             }
-            val examples = ArrayList<Pair<FloatArray, SmartAlbum>>()
-            explicit.forEach { (id, a) -> embeddings[id]?.let { examples += it to a } }
+            class Example(val vec: FloatArray, val album: SmartAlbum, val sign: Float)
+            val examples = ArrayList<Example>()
+            active.forEach { a ->
+                a.includes.forEach { id -> embeddings[id]?.let { examples += Example(it, a, 1f) } }
+                a.excludes.forEach { id -> embeddings[id]?.let { examples += Example(it, a, -1f) } }
+            }
 
             val result = LinkedHashMap<String, MutableList<Long>>()
             val sorted = HashSet<Long>()
+            val unsure = ArrayList<Pair<TrainerCard, Float>>()
             var photoCount = 0
+            val minProb = engine.minProb
+            val minMargin = engine.minMargin
             for (m in items) {
                 ensureActive()
                 val v = embeddings[m.id] ?: continue
                 photoCount++
                 var target: SmartAlbum? = explicit[m.id]
+                val blocked = HashSet<String>()
 
-                // 1) Learned: nearest taught examples
+                // 1) Learned from your examples (nearest neighbours, including "not this album" answers)
                 if (target == null && examples.isNotEmpty()) {
-                    val votes = HashMap<String, Float>()
-                    var bestSingle = 0f
-                    var bestSingleAlbum: SmartAlbum? = null
-                    val top = examples.asSequence()
-                        .map { (ev, a) -> dot(v, ev) to a }
-                        .filter { it.first >= 0.80f }
-                        .sortedByDescending { it.first }
-                        .take(5)
+                    val near = examples.asSequence()
+                        .map { it to dot(v, it.vec) }
+                        .filter { it.second >= 0.75f }
+                        .sortedByDescending { it.second }
+                        .take(7)
                         .toList()
-                    top.forEach { (s, a) ->
-                        votes[a.id] = (votes[a.id] ?: 0f) + s
-                        if (s > bestSingle) { bestSingle = s; bestSingleAlbum = a }
+                    val votes = HashMap<String, Float>()
+                    near.forEach { (ex, sim) ->
+                        votes[ex.album.id] = (votes[ex.album.id] ?: 0f) + ex.sign * sim
+                        if (ex.sign < 0 && sim >= 0.88f) blocked += ex.album.id
                     }
-                    val best = votes.maxByOrNull { it.value }
+                    val best = votes.filter { it.value > 0f && it.key !in blocked }.maxByOrNull { it.value }
+                    val top = near.firstOrNull()
                     if (best != null) {
-                        val a = top.first { it.second.id == best.key }.second
-                        if ((best.value >= 1.6f || bestSingle >= 0.92f) && m.id !in a.excludes) target = a
-                    } else if (bestSingleAlbum != null && bestSingle >= 0.92f && m.id !in bestSingleAlbum!!.excludes) {
-                        target = bestSingleAlbum
+                        val album = near.first { it.first.album.id == best.key }.first.album
+                        val strongSingle = top != null && top.first.sign > 0 && top.first.album.id == best.key && top.second >= 0.90f
+                        if ((best.value >= 1.4f || strongSingle) && m.id !in album.excludes) target = album
                     }
                 }
 
-                // 2) Starter categories / descriptions
+                // 2) Starter categories + your descriptions, with folder clues
                 if (target == null && anchors.isNotEmpty()) {
-                    var maxLogit = -Float.MAX_VALUE
-                    val logits = FloatArray(anchors.size) { i -> (100f * dot(v, anchors[i].second)).also { if (it > maxLogit) maxLogit = it } }
-                    var sum = 0f
-                    var bestI = 0
-                    for (i in logits.indices) {
-                        logits[i] = exp((logits[i] - maxLogit).toDouble()).toFloat()
-                        sum += logits[i]
-                        if (logits[i] > logits[bestI]) bestI = i
+                    val hints = folderHints(m)
+                    val logits = FloatArray(anchors.size) { i ->
+                        engine.scale * dot(v, anchors[i].vec) + (anchors[i].key?.let { hints[it] } ?: 0f)
                     }
-                    val prob = logits[bestI] / sum
-                    val a = anchors[bestI].first
-                    if (a != null && a.status != AlbumStatus.DISMISSED && prob >= 0.45f && m.id !in a.excludes) target = a
+                    val maxL = logits.max()
+                    var sum = 0f
+                    for (i in logits.indices) { logits[i] = exp((logits[i] - maxL).toDouble()).toFloat(); sum += logits[i] }
+                    // Add up by album (in simplified mode several categories feed one album)
+                    val perAlbum = HashMap<String, Float>()
+                    val albumOf = HashMap<String, SmartAlbum>()
+                    for (i in logits.indices) {
+                        val a = anchors[i].album ?: continue
+                        perAlbum[a.id] = (perAlbum[a.id] ?: 0f) + logits[i] / sum
+                        albumOf[a.id] = a
+                    }
+                    val ranked = perAlbum.entries.sortedByDescending { it.value }
+                    val first = ranked.getOrNull(0)
+                    if (first != null) {
+                        val p1 = first.value
+                        val p2 = ranked.getOrNull(1)?.value ?: 0f
+                        val a = albumOf.getValue(first.key)
+                        val usable = a.status != AlbumStatus.DISMISSED && visible(a) && m.id !in a.excludes && a.id !in blocked
+                        if (usable && p1 >= minProb && p1 - p2 >= minMargin) {
+                            target = a
+                            if (p1 < 0.7f) unsure += TrainerCard(m.id, a.id, a.name) to (p1 - minProb)
+                        } else if (usable && p1 >= 0.2f) {
+                            unsure += TrainerCard(m.id, a.id, a.name) to (minProb - p1)
+                        }
+                    }
                 }
 
                 if (target != null) {
@@ -232,14 +273,50 @@ class Sorter(private val context: Context) {
 
             if (suggestClusters) suggestClusters(items, sorted, result)
 
+            trainerPool = unsure.sortedBy { kotlin.math.abs(it.second) }.take(300).map { it.first }
             val latest = synchronized(albumsLock) { albums }
             state.update {
                 it.copy(
                     sortedCount = sorted.size,
                     photoCount = photoCount,
-                    albums = latest.map { a -> SmartAlbumView(a, if (a.status == AlbumStatus.DISMISSED) emptyList() else result[a.id].orEmpty()) },
+                    unsureCount = unsure.size,
+                    simplified = simplified,
+                    albums = latest.filter { a -> visible(a) }
+                        .map { a -> SmartAlbumView(a, if (a.status == AlbumStatus.DISMISSED) emptyList() else result[a.id].orEmpty()) },
                 )
             }
+        }
+    }
+
+    /** Up to [count] photos the sorter is least sure about, to ask you about. */
+    fun trainerCards(count: Int = 20): List<TrainerCard> {
+        val pool = trainerPool
+        if (pool.isEmpty()) return emptyList()
+        // Mix the closest calls with some variety across albums.
+        val byAlbum = pool.groupBy { it.albumId }.values.map { it.toMutableList() }
+        val out = ArrayList<TrainerCard>()
+        while (out.size < count && byAlbum.any { it.isNotEmpty() }) {
+            byAlbum.forEach { l -> if (l.isNotEmpty() && out.size < count) out += l.removeAt(0) }
+        }
+        return out
+    }
+
+    /** Applies a batch of trainer answers at once. */
+    suspend fun teach(answers: List<TrainerAnswer>) {
+        if (answers.isEmpty()) return
+        change { l ->
+            var list = l
+            answers.forEach { ans ->
+                list = list.map { a ->
+                    when {
+                        a.id == ans.albumId && ans.yes -> a.copy(includes = a.includes + ans.photoId, excludes = a.excludes - ans.photoId)
+                        a.id == ans.albumId -> a.copy(includes = a.includes - ans.photoId, excludes = a.excludes + ans.photoId)
+                        ans.yes -> a.copy(includes = a.includes - ans.photoId)
+                        else -> a
+                    }
+                }
+            }
+            list
         }
     }
 
@@ -277,10 +354,56 @@ class Sorter(private val context: Context) {
         val cats = engine.categories
         if (cats.isEmpty()) return
         mutate { list ->
-            val missing = cats.filter { c -> list.none { it.key == c.key } }
-            if (missing.isEmpty()) list
-            else list + missing.map { c -> SmartAlbum("cat_" + c.key, c.name, c.key, null, AlbumStatus.SUGGESTED) }
+            val missingCats = cats.filter { c -> list.none { it.key == c.key } }
+                .map { c -> SmartAlbum("cat_" + c.key, c.name, c.key, null, AlbumStatus.SUGGESTED) }
+            val missingGroups = engine.groups.filter { g -> list.none { it.key == "g:" + g.key } }
+                .map { g -> SmartAlbum("fold_" + g.key, g.name, "g:" + g.key, null, AlbumStatus.SUGGESTED) }
+            if (missingCats.isEmpty() && missingGroups.isEmpty()) list else list + missingCats + missingGroups
         }
+    }
+
+    /** Starter albums belong to either detailed or simplified mode; your own albums always show. */
+    private fun visible(a: SmartAlbum): Boolean {
+        val k = a.key ?: return true
+        return if (k.startsWith("g:")) simplified else !simplified
+    }
+
+    /** Sets the mode before the first sort (no re-sort). */
+    fun initSimplified(on: Boolean) {
+        simplified = on
+        state.update { st ->
+            st.copy(simplified = on, albums = synchronized(albumsLock) { albums }.filter { visible(it) }.map { SmartAlbumView(it, emptyList()) })
+        }
+    }
+
+    suspend fun setSimplified(on: Boolean) {
+        simplified = on
+        state.update { it.copy(simplified = on) }
+        classify()
+    }
+
+    /** Folder clues, added to the model's scores (positive = more likely). */
+    private fun folderHints(m: MediaItem): Map<String, Float> {
+        val path = (m.relativePath + "/" + m.bucketName).lowercase()
+        val hints = HashMap<String, Float>()
+        fun add(keys: List<String>, v: Float) = keys.forEach { hints[it] = (hints[it] ?: 0f) + v }
+        val realWorld = listOf("pets", "animals", "selfies", "people", "groups", "food", "drinks", "nature", "sky",
+            "water", "plants", "city", "home", "vehicles", "sports", "events")
+        when {
+            "screenshot" in path -> {
+                add(listOf("screenshots"), 2.0f); add(listOf("chats"), 1.5f)
+                add(realWorld, -1.0f)
+            }
+            path.startsWith("dcim/camera") || m.bucketName.equals("camera", true) -> {
+                add(listOf("screenshots", "chats"), -4f)
+                add(listOf("memes", "comics", "games", "anime"), -3f)
+                add(listOf("maps"), -2f); add(listOf("art"), -1.5f)
+            }
+        }
+        if (listOf("ifunny", "meme", "reddit", "9gag", "imgur").any { it in path }) {
+            add(listOf("memes"), 2.0f); add(listOf("comics"), 1.0f)
+        }
+        return hints
     }
 
     private fun promptVector(prompt: String): FloatArray? {
@@ -483,6 +606,8 @@ class Sorter(private val context: Context) {
     }
 
     private fun loadEmbeddings() {
+        // Embeddings from an older model don't match — remove them.
+        dir.listFiles()?.filter { it.name.startsWith("emb") && it.name.endsWith(".bin") && it.name != embFile.name }?.forEach { it.delete() }
         if (!embFile.exists()) return
         runCatching {
             DataInputStream(BufferedInputStream(FileInputStream(embFile), 256 * 1024)).use { input ->

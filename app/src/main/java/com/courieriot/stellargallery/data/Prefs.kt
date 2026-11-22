@@ -74,6 +74,10 @@ class Prefs(context: Context) {
         get() = p.getBoolean("sorter", true)
         set(v) = p.edit().putBoolean("sorter", v).apply()
 
+    var sorterSimplified: Boolean
+        get() = p.getBoolean("sorter_simple", true)
+        set(v) = p.edit().putBoolean("sorter_simple", v).apply()
+
     companion object {
         fun get(context: Context) = Prefs(context.applicationContext)
     }

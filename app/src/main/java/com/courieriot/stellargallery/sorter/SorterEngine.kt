@@ -11,7 +11,8 @@ import java.nio.FloatBuffer
 import java.nio.LongBuffer
 import kotlin.math.sqrt
 
-class StarterCategory(val key: String, val name: String, val emb: FloatArray)
+class StarterCategory(val key: String, val name: String, val group: String, val emb: FloatArray)
+class CategoryGroup(val key: String, val name: String)
 
 /**
  * Runs the on-device MobileCLIP model. Everything is wrapped so a missing or broken model
@@ -27,8 +28,23 @@ class SorterEngine(private val context: Context) {
 
     var categories: List<StarterCategory> = emptyList()
         private set
+    var groups: List<CategoryGroup> = emptyList()
+        private set
     var dim = 0
         private set
+    var modelId = ""
+        private set
+    /** Decision rules tuned at build time. */
+    var scale = 100f
+        private set
+    var minProb = 0.5f
+        private set
+    var minMargin = 0.15f
+        private set
+    private var inputSize = 256
+    private var normalizeInput = false
+    private var mean = floatArrayOf(0f, 0f, 0f)
+    private var std = floatArrayOf(1f, 1f, 1f)
 
     val searchDir: File get() = File(context.filesDir, "sorter/search").apply { mkdirs() }
     val textModelFile: File get() = File(searchDir, "text.onnx")
@@ -46,15 +62,42 @@ class SorterEngine(private val context: Context) {
             val catJson = context.assets.open("sorter/categories.json").use { it.readBytes().toString(Charsets.UTF_8) }
             val root = JSONObject(catJson)
             dim = root.getInt("dim")
+            modelId = root.optString("model", "v1")
+            root.optJSONObject("preprocess")?.let { p ->
+                inputSize = p.optInt("size", 256)
+                normalizeInput = p.optBoolean("normalize", false)
+                p.optJSONArray("mean")?.let { a -> mean = FloatArray(3) { a.getDouble(it).toFloat() } }
+                p.optJSONArray("std")?.let { a -> std = FloatArray(3) { a.getDouble(it).toFloat() } }
+            }
+            root.optJSONObject("decision")?.let { d ->
+                scale = d.optDouble("scale", 100.0).toFloat()
+                minProb = d.optDouble("min_prob", 0.5).toFloat()
+                minMargin = d.optDouble("min_margin", 0.15).toFloat()
+            }
             val arr = root.getJSONArray("categories")
             categories = List(arr.length()) { i ->
                 val o = arr.getJSONObject(i)
                 val ea = o.getJSONArray("emb")
-                StarterCategory(o.getString("key"), o.getString("name"), FloatArray(ea.length()) { j -> ea.getDouble(j).toFloat() })
+                StarterCategory(
+                    o.getString("key"), o.getString("name"), o.optString("group", o.getString("key")),
+                    FloatArray(ea.length()) { j -> ea.getDouble(j).toFloat() },
+                )
             }
-            val bytes = context.assets.open("sorter/vision.onnx").use { it.readBytes() }
+            val ga = root.optJSONArray("groups")
+            groups = if (ga == null) emptyList() else List(ga.length()) { i ->
+                val o = ga.getJSONObject(i)
+                CategoryGroup(o.getString("key"), o.getString("name"))
+            }
+            // Copy the model out of the APK once, so it loads from disk instead of filling memory.
+            val modelFile = File(context.filesDir, "sorter/vision-$modelId.onnx")
+            if (!modelFile.exists() || modelFile.length() == 0L) {
+                File(context.filesDir, "sorter").listFiles()?.filter { it.name.startsWith("vision-") }?.forEach { it.delete() }
+                val tmp = File(modelFile.parentFile, modelFile.name + ".part")
+                context.assets.open("sorter/vision.onnx").use { input -> tmp.outputStream().use { input.copyTo(it, 256 * 1024) } }
+                if (!tmp.renameTo(modelFile)) error("couldn't prepare the model file")
+            }
             val opts = OrtSession.SessionOptions().apply { setIntraOpNumThreads(2) }
-            val s = e.createSession(bytes, opts)
+            val s = e.createSession(modelFile.absolutePath, opts)
             visionIn = s.inputNames.first()
             visionOut = if ("image_embeds" in s.outputNames) "image_embeds" else s.outputNames.first()
             vision = s
@@ -70,8 +113,8 @@ class SorterEngine(private val context: Context) {
     fun embedImage(src: Bitmap): FloatArray {
         val s = vision ?: error("Vision model not loaded")
         val e = env ?: error("No runtime")
-        val size = 256
-        // Resize shortest side to 256, then center-crop 256×256 (MobileCLIP preprocessing).
+        val size = inputSize
+        // Resize shortest side, then center-crop (same steps the build verified on sample photos).
         val scale = size.toFloat() / minOf(src.width, src.height)
         val sw = (src.width * scale).toInt().coerceAtLeast(size)
         val sh = (src.height * scale).toInt().coerceAtLeast(size)
@@ -84,9 +127,15 @@ class SorterEngine(private val context: Context) {
         val plane = size * size
         for (i in 0 until plane) {
             val c = px[i]
-            buf.put(i, ((c shr 16) and 0xFF) / 255f)
-            buf.put(plane + i, ((c shr 8) and 0xFF) / 255f)
-            buf.put(2 * plane + i, (c and 0xFF) / 255f)
+            var r = ((c shr 16) and 0xFF) / 255f
+            var g = ((c shr 8) and 0xFF) / 255f
+            var b = (c and 0xFF) / 255f
+            if (normalizeInput) {
+                r = (r - mean[0]) / std[0]; g = (g - mean[1]) / std[1]; b = (b - mean[2]) / std[2]
+            }
+            buf.put(i, r)
+            buf.put(plane + i, g)
+            buf.put(2 * plane + i, b)
         }
         OnnxTensor.createTensor(e, buf, longArrayOf(1, 3, size.toLong(), size.toLong())).use { t ->
             s.run(mapOf(visionIn to t)).use { r ->

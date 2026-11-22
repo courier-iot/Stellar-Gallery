@@ -177,6 +177,7 @@ fun StellarRoot(vm: MainViewModel, onCloseExternal: () -> Unit = {}) {
                 composable("map") { MapScreen(vm, nav) }
                 composable("videoEdit") { VideoEditScreen(vm, nav) }
                 composable("backup") { BackupScreen(vm, nav) }
+                composable("trainer") { TrainerScreen(vm, nav) }
                 composable(
                     "smart/{id}",
                     arguments = listOf(navArgument("id") { type = NavType.StringType }),

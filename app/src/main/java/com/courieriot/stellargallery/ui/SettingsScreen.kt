@@ -15,6 +15,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.ui.draw.clip
 import androidx.compose.material.icons.outlined.AutoAwesome
 import androidx.compose.material.icons.outlined.CloudUpload
+import androidx.compose.material.icons.outlined.FolderSpecial
 import androidx.compose.material.icons.outlined.ManageSearch
 import androidx.compose.material.icons.outlined.RestartAlt
 import com.courieriot.stellargallery.sorter.SearchModelState
@@ -94,6 +95,7 @@ fun SettingsScreen(vm: MainViewModel, nav: NavController) {
     val hideVault by vm.hideVaultEntry.collectAsStateWithLifecycle()
     val widgetFav by vm.widgetFavoritesOnly.collectAsStateWithLifecycle()
     val sorterOn by vm.sorterEnabled.collectAsStateWithLifecycle()
+    val simplified by vm.sorterSimplified.collectAsStateWithLifecycle()
     val sorterState by vm.sorterState.collectAsStateWithLifecycle()
     var confirmReset by remember { mutableStateOf(false) }
     var sortDialog by remember { mutableStateOf(false) }
@@ -156,6 +158,9 @@ fun SettingsScreen(vm: MainViewModel, nav: NavController) {
             }
 
             item { Section("Photo sorter") }
+            item {
+                SwitchRow(Icons.Outlined.FolderSpecial, "Simplified folders (fewer, broader albums)", simplified, vm::setSorterSimplified)
+            }
             item {
                 SwitchRow(Icons.Outlined.AutoAwesome, "Photo sorter (on-device AI)", sorterOn, vm::setSorterEnabled)
             }

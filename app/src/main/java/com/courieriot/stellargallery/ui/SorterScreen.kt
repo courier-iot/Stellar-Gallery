@@ -119,11 +119,24 @@ fun SorterTab(vm: MainViewModel, nav: NavController) {
                             modifier = Modifier.padding(top = 6.dp),
                         )
                     }
+                    if (!state.scanning && state.modelError == null && state.photoCount > 0) {
+                        Text(
+                            "${state.photoCount - state.sortedCount} left unsorted on purpose — it only files photos it's confident about.",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.padding(top = 4.dp),
+                        )
+                    }
                     Spacer(Modifier.height(8.dp))
-                    OutlinedButton(onClick = { creating = true }) {
-                        Icon(Icons.Outlined.Add, null, modifier = Modifier.size(18.dp))
-                        Spacer(Modifier.width(6.dp))
-                        Text("New smart album")
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Button(onClick = { nav.navigate("trainer") }, enabled = state.unsureCount > 0 && !state.scanning) {
+                            Text(if (state.unsureCount > 0) "Train it (${minOf(20, state.unsureCount)} quick questions)" else "Train it")
+                        }
+                        OutlinedButton(onClick = { creating = true }) {
+                            Icon(Icons.Outlined.Add, null, modifier = Modifier.size(18.dp))
+                            Spacer(Modifier.width(6.dp))
+                            Text("New")
+                        }
                     }
                 }
             }

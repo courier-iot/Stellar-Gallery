@@ -3,6 +3,12 @@
 A private, offline photo & video gallery for Android with a Stellar/cyberpunk look.
 No accounts, no tracking, no Google services.
 
+## New in v2.2.0
+- Sorter accuracy: full-precision model, an "unsure" bucket instead of forced guesses, folder clues,
+  learning from "not this album", and a swipe trainer.
+- Simplified folders option (broader albums like People, Pets & animals, Documents & notes).
+- The build now runs an accuracy test on sample photos and refuses to release a sorter that fails it.
+
 ## New in v2.1.0
 - Photo sorter: on-device AI that suggests smart albums (approve, rename, teach it). Toggle in Settings.
 - Optional "Search & sort" download (~45 MB) for searching by what's in a photo.

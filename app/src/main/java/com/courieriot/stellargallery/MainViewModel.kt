@@ -185,6 +185,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     val sorterState: StateFlow<SorterState> = sorter.state
     private var sortJob: Job? = null
     @Volatile private var rescanPending = false
+    private val _sorterSimplified = MutableStateFlow(prefs.sorterSimplified)
+    val sorterSimplified: StateFlow<Boolean> = _sorterSimplified
 
     // ---------------- Tools ----------------
 
@@ -209,6 +211,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     init {
         ThemeState.apply(prefs.accent, prefs.pureBlack)
+        sorter.initSimplified(prefs.sorterSimplified)
         runCatching { app.contentResolver.registerContentObserver(repo.observeUri, true, observer) }
         if (prefs.checkUpdates) checkForUpdates(manual = false)
     }
@@ -291,6 +294,17 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     fun sorterMove(fromId: String, toId: String, items: List<MediaItem>) = sorterOp("Moved — the sorter will learn from this") {
         sorter.movePhotos(fromId, toId, items.map { it.id }); clearSelection()
     }
+    fun setSorterSimplified(b: Boolean) {
+        prefs.sorterSimplified = b
+        _sorterSimplified.value = b
+        sorterOp { sorter.setSimplified(b) }
+    }
+
+    fun trainerCards(): List<com.courieriot.stellargallery.sorter.TrainerCard> = sorter.trainerCards(20)
+
+    fun sorterTeach(answers: List<com.courieriot.stellargallery.sorter.TrainerAnswer>) =
+        sorterOp(if (answers.isEmpty()) null else "Thanks — the sorter learned from ${answers.size} answers") { sorter.teach(answers) }
+
     fun sorterReset() = sorterOp("The sorter's learning was reset") { sorter.resetLearning() }
     fun installSearchModel() = sorterOp { sorter.installSearchModel() }
     fun removeSearchModel() = sorterOp("Search & sort removed") { sorter.removeSearchModel() }
