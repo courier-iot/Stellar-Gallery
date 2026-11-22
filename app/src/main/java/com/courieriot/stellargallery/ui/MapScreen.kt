@@ -135,7 +135,7 @@ fun MapScreen(vm: MainViewModel, nav: NavController) {
             setTileSource(TileSourceFactory.MAPNIK)
             setMultiTouchControls(true)
             zoomController.setVisibility(CustomZoomButtonsController.Visibility.NEVER)
-            overlayManager.tilesOverlay.setColorFilter(TilesOverlay.INVERTED_COLORS)
+            overlayManager.tilesOverlay.setColorFilter(TilesOverlay.INVERT_COLORS)
             minZoomLevel = 2.0
             maxZoomLevel = 19.0
             controller.setZoom(3.0)
