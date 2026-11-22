@@ -302,6 +302,23 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     fun trainerCards(): List<com.courieriot.stellargallery.sorter.TrainerCard> = sorter.trainerCards(20)
 
+    suspend fun matchCards(albumId: String, extra: Collection<Long>, skip: Set<Long>) =
+        runCatching { sorter.matchCards(albumId, extra, skip) }.getOrDefault(emptyList())
+
+    fun albumNeedsExamples(albumId: String): Boolean = sorter.needsExamples(albumId)
+
+    /** Creates a smart album, then hands its id back (e.g. to open "Match this album"). */
+    fun sorterCreateThen(name: String, prompt: String?, items: List<MediaItem> = emptyList(), then: (String) -> Unit) {
+        viewModelScope.launch {
+            val id = runCatching {
+                val id = sorter.create(name, prompt)
+                if (items.isNotEmpty()) sorter.addPhotos(id, items.map { it.id })
+                id
+            }.getOrNull()
+            if (id != null) then(id) else toast("Couldn't create the album")
+        }
+    }
+
     fun sorterTeach(answers: List<com.courieriot.stellargallery.sorter.TrainerAnswer>) =
         sorterOp(if (answers.isEmpty()) null else "Thanks — the sorter learned from ${answers.size} answers") { sorter.teach(answers) }
 

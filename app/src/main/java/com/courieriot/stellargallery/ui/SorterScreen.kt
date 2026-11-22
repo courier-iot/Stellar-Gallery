@@ -179,7 +179,9 @@ fun SorterTab(vm: MainViewModel, nav: NavController) {
                             modifier = Modifier.size(48.dp).clip(RoundedCornerShape(10.dp)).background(Panel),
                         )
                     },
-                    trailingContent = { Icon(Icons.AutoMirrored.Filled.KeyboardArrowRight, null) },
+                    trailingContent = {
+                        TextButton(onClick = { nav.navigate("match/${sv.album.id}") }) { Text("Match") }
+                    },
                     colors = ListItemDefaults.colors(containerColor = Color.Transparent),
                     modifier = Modifier.clip(RoundedCornerShape(12.dp)).clickable { nav.navigate("smart/${sv.album.id}") },
                 )
@@ -216,7 +218,7 @@ fun SorterTab(vm: MainViewModel, nav: NavController) {
     renaming?.let { sv ->
         RenameDialog(sv.album.name, onDismiss = { renaming = null }) { vm.sorterRename(sv.album.id, it); renaming = null }
     }
-    if (creating) NewSmartAlbumDialog(vm, onDismiss = { creating = false })
+    if (creating) NewSmartAlbumDialog(vm, onDismiss = { creating = false }, onMatch = { id -> nav.navigate("match/$id") })
 }
 
 @Composable
@@ -288,7 +290,7 @@ fun RenameDialog(initial: String, onDismiss: () -> Unit, onSave: (String) -> Uni
 }
 
 @Composable
-fun NewSmartAlbumDialog(vm: MainViewModel, onDismiss: () -> Unit) {
+fun NewSmartAlbumDialog(vm: MainViewModel, onDismiss: () -> Unit, onMatch: ((String) -> Unit)? = null) {
     val state by vm.sorterState.collectAsStateWithLifecycle()
     var name by remember { mutableStateOf("") }
     var prompt by remember { mutableStateOf("") }
@@ -308,18 +310,24 @@ fun NewSmartAlbumDialog(vm: MainViewModel, onDismiss: () -> Unit) {
                     )
                 } else {
                     Text(
-                        "Teach it by adding photos: select photos anywhere → ⋮ → Add to smart album. " +
-                            "With Search & sort on, you can also describe what goes in it.",
+                        "Next you'll pick a few example photos, and the sorter will find more like them for you to confirm.",
                         style = MaterialTheme.typography.bodySmall,
                     )
                 }
             }
         },
         confirmButton = {
-            Button(enabled = name.isNotBlank(), onClick = {
-                vm.sorterCreate(name, if (canDescribe) prompt else null)
-                onDismiss()
-            }) { Text("Create") }
+            if (onMatch != null) {
+                Button(enabled = name.isNotBlank(), onClick = {
+                    vm.sorterCreateThen(name, if (canDescribe) prompt else null) { id -> onMatch(id) }
+                    onDismiss()
+                }) { Text("Create & match") }
+            } else {
+                Button(enabled = name.isNotBlank(), onClick = {
+                    vm.sorterCreate(name, if (canDescribe) prompt else null)
+                    onDismiss()
+                }) { Text("Create") }
+            }
         },
         dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
     )

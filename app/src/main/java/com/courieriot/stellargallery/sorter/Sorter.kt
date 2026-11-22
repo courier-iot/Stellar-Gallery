@@ -301,6 +301,51 @@ class Sorter(private val context: Context) {
         return out
     }
 
+    /**
+     * "Match this album": the photos most like the album (from its examples, description or category)
+     * that you haven't answered yet. [extra] are examples picked just now.
+     */
+    suspend fun matchCards(
+        albumId: String,
+        extra: Collection<Long> = emptyList(),
+        skip: Set<Long> = emptySet(),
+        count: Int = 25,
+    ): List<TrainerCard> = withContext(Dispatchers.Default) {
+        val a = synchronized(albumsLock) { albums }.firstOrNull { it.id == albumId } ?: return@withContext emptyList()
+        val vecs = (a.includes + extra).mapNotNull { embeddings[it] }
+        var center: FloatArray? = null
+        if (vecs.isNotEmpty()) {
+            val sum = FloatArray(vecs[0].size)
+            vecs.forEach { v -> for (i in sum.indices) sum[i] += v[i] }
+            center = SorterEngine.normalize(sum)
+        } else if (!a.prompt.isNullOrBlank()) {
+            center = promptVector(a.prompt)
+        } else if (a.key != null) {
+            val cats = if (a.key.startsWith("g:")) engine.categories.filter { "g:" + it.group == a.key }
+            else engine.categories.filter { it.key == a.key }
+            if (cats.isNotEmpty()) {
+                val sum = FloatArray(cats[0].emb.size)
+                cats.forEach { c -> for (i in sum.indices) sum[i] += c.emb[i] }
+                center = SorterEngine.normalize(sum)
+            }
+        }
+        val c = center ?: return@withContext emptyList()
+        val taken = HashSet<Long>().apply { addAll(a.includes); addAll(a.excludes); addAll(extra); addAll(skip) }
+        media.asSequence()
+            .filter { it.id !in taken }
+            .mapNotNull { m -> embeddings[m.id]?.let { m.id to dot(c, it) } }
+            .sortedByDescending { it.second }
+            .take(count)
+            .map { TrainerCard(it.first, a.id, a.name) }
+            .toList()
+    }
+
+    /** True when an album has nothing to match from yet (no examples, description or category). */
+    fun needsExamples(albumId: String): Boolean {
+        val a = synchronized(albumsLock) { albums }.firstOrNull { it.id == albumId } ?: return true
+        return a.includes.none { embeddings.containsKey(it) } && a.prompt.isNullOrBlank() && a.key == null
+    }
+
     /** Applies a batch of trainer answers at once. */
     suspend fun teach(answers: List<TrainerAnswer>) {
         if (answers.isEmpty()) return

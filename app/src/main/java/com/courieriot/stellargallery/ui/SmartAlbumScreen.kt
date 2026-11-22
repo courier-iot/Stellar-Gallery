@@ -31,6 +31,7 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
@@ -102,6 +103,7 @@ fun SmartAlbumScreen(vm: MainViewModel, nav: NavController, albumId: String) {
                                 Icon(Icons.Outlined.Slideshow, "Slideshow")
                             }
                         }
+                        TextButton(onClick = { nav.navigate("match/$albumId") }) { Text("Match") }
                         IconButton(onClick = { renaming = true }) { Icon(Icons.Outlined.Edit, "Rename") }
                         Box {
                             IconButton(onClick = { menu = true }) { Icon(Icons.Filled.MoreVert, "More") }
@@ -158,7 +160,7 @@ fun SmartAlbumScreen(vm: MainViewModel, nav: NavController, albumId: String) {
                     columns = columns,
                     groupByDate = false,
                     selection = selection,
-                    emptyText = "Nothing here yet. Add photos from any album: select → ⋮ → Add to smart album.",
+                    emptyText = "Nothing here yet. Tap “Match” to pick a few examples and let the sorter find the rest.",
                     onOpen = { idx -> nav.navigate("viewer/smart_$albumId/$idx") },
                     onToggle = vm::toggleSelection,
                     onSelectionChange = vm::setSelection,

@@ -124,7 +124,7 @@ fun ViewerScreen(vm: MainViewModel, nav: NavController, source: String, startInd
             if (item.isVideo) {
                 VideoPage(
                     uri = item.uri,
-                    placeholder = item.uri,
+                    placeholder = mediaRequest(context, item, 1600),
                     active = p == pager.currentPage,
                     onChromeChange = { chrome = it },
                     controlsBottomPadding = 76.dp,

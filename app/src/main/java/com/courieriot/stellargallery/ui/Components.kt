@@ -107,6 +107,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.navigation.NavController
 import coil.compose.AsyncImage
 import coil.request.ImageRequest
+import coil.request.videoFrameMillis
 import com.courieriot.stellargallery.MainViewModel
 import com.courieriot.stellargallery.data.Album
 import com.courieriot.stellargallery.data.MediaItem
@@ -141,6 +142,14 @@ fun EmptyState(text: String, modifier: Modifier = Modifier.fillMaxSize()) {
         Text(text, textAlign = TextAlign.Center, color = MaterialTheme.colorScheme.onSurfaceVariant)
     }
 }
+
+// ---------------- Images ----------------
+
+/** Image request that grabs a frame ~1.5s into videos (many videos start on a black frame). */
+fun mediaRequest(context: Context, item: MediaItem, size: Int): ImageRequest =
+    ImageRequest.Builder(context).data(item.uri).size(size).apply {
+        if (item.isVideo) videoFrameMillis(if (item.duration in 1L..2999L) item.duration / 2 else 1500L)
+    }.build()
 
 // ---------------- Grid ----------------
 
@@ -336,7 +345,7 @@ fun MediaThumb(
             .clickable(onClick = onClick),
     ) {
         AsyncImage(
-            model = ImageRequest.Builder(context).data(item.uri).size(360).build(),
+            model = mediaRequest(context, item, 360),
             contentDescription = item.name,
             contentScale = ContentScale.Crop,
             modifier = Modifier

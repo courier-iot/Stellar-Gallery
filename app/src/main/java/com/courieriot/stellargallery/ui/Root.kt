@@ -179,6 +179,10 @@ fun StellarRoot(vm: MainViewModel, onCloseExternal: () -> Unit = {}) {
                 composable("backup") { BackupScreen(vm, nav) }
                 composable("trainer") { TrainerScreen(vm, nav) }
                 composable(
+                    "match/{id}",
+                    arguments = listOf(navArgument("id") { type = NavType.StringType }),
+                ) { e -> TrainerScreen(vm, nav, matchAlbumId = e.arguments?.getString("id")) }
+                composable(
                     "smart/{id}",
                     arguments = listOf(navArgument("id") { type = NavType.StringType }),
                 ) { e -> SmartAlbumScreen(vm, nav, e.arguments?.getString("id") ?: "") }

@@ -5,7 +5,7 @@ plugins {
 }
 
 // Bump this for every release. The workflow reads it to tag the GitHub release (vX.Y.Z).
-val appVersion = "2.2.0"
+val appVersion = "2.3.0"
 
 val versionParts = appVersion.split(".").map { it.toIntOrNull() ?: 0 }
 val computedVersionCode = versionParts.getOrElse(0) { 0 } * 10000 +
