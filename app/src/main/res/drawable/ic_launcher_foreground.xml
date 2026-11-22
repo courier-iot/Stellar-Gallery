@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Neon photo frame with a mountain + star, circled by a cyan orbit ring -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+
+    <!-- Photo frame -->
+    <path
+        android:strokeColor="#FF3CAC"
+        android:strokeWidth="3"
+        android:fillColor="#00000000"
+        android:pathData="M37,37 H71 A4,4 0 0 1 75,41 V67 A4,4 0 0 1 71,71 H37 A4,4 0 0 1 33,67 V41 A4,4 0 0 1 37,37 Z" />
+
+    <!-- Mountains -->
+    <path
+        android:fillColor="#3CF2FF"
+        android:pathData="M37,67 L48,52 L56,61 L62,55 L71,67 Z" />
+
+    <!-- Star -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M63,41 L64.4,44.6 L68,46 L64.4,47.4 L63,51 L61.6,47.4 L58,46 L61.6,44.6 Z" />
+
+    <!-- Orbit ring -->
+    <group
+        android:pivotX="54"
+        android:pivotY="54"
+        android:rotation="-20">
+        <path
+            android:strokeColor="#B33CF2FF"
+            android:strokeWidth="2"
+            android:fillColor="#00000000"
+            android:pathData="M24,54 A30,10 0 1 1 84,54 A30,10 0 1 1 24,54 Z" />
+    </group>
+</vector>
