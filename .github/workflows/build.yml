@@ -31,11 +31,11 @@ jobs:
         uses: actions/cache@v4
         with:
           path: .sorter-cache
-          key: sorter-mobileclip-s0-v1
+          key: sorter-mobileclip-s0-v2
 
       - name: Prepare photo sorter (download + test models)
         run: |
-          pip install --quiet "onnxruntime==1.19.2" "tokenizers==0.20.3" "numpy==1.26.4"
+          pip install --quiet "onnxruntime==1.19.2" "tokenizers==0.20.3" "numpy==1.26.4" "pillow==10.4.0"
           python scripts/prepare_sorter.py
 
       - name: Read app version
