@@ -62,6 +62,9 @@ fun SearchScreen(vm: MainViewModel, nav: NavController) {
     var dateLabel by rememberSaveable { mutableStateOf("Any time") }
     var pickRange by remember { mutableStateOf(false) }
     val focus = remember { FocusRequester() }
+    val sorterState by vm.sorterState.collectAsStateWithLifecycle()
+    val sorterOn by vm.sorterEnabled.collectAsStateWithLifecycle()
+    val smartOn = sorterOn && sorterState.search == com.courieriot.stellargallery.sorter.SearchModelState.Ready
     val selected = remember(results, selection) { results.filter { it.id in selection } }
 
     BackHandler(enabled = selection.isNotEmpty()) { vm.clearSelection() }
@@ -135,7 +138,10 @@ fun SearchScreen(vm: MainViewModel, nav: NavController) {
             }
             Box(Modifier.fillMaxSize()) {
                 if (q.isEmpty) {
-                    EmptyState("Search by file name, album or folder.\nCombine with type and date filters.")
+                    EmptyState(
+                        if (smartOn) "✦ Search & sort is on — describe what's in the photo (\"orange cat\", \"sunset\"),\nor search by file name, album or folder."
+                        else "Search by file name, album or folder.\nCombine with type and date filters.\n\nTurn on Search & sort in Settings to search by what's in a photo.",
+                    )
                 } else {
                     MediaGrid(
                         items = results,

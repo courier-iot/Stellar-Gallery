@@ -27,6 +27,9 @@ import com.courieriot.stellargallery.data.Prefs
 import com.courieriot.stellargallery.data.SortOrder
 import com.courieriot.stellargallery.data.UpdateChecker
 import com.courieriot.stellargallery.share.ShareManager
+import com.courieriot.stellargallery.sorter.SearchModelState
+import com.courieriot.stellargallery.sorter.Sorter
+import com.courieriot.stellargallery.sorter.SorterState
 import com.courieriot.stellargallery.ui.theme.Accent
 import com.courieriot.stellargallery.ui.theme.ThemeState
 import com.courieriot.stellargallery.vault.Vault
@@ -82,6 +85,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     val vault = Vault(app)
     val share = ShareManager(app, repo)
     val backup = BackupManager(app, prefs, repo)
+    val sorter = Sorter(app)
 
     // ---------------- Media ----------------
 
@@ -133,8 +137,10 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     // Search
     private val _searchQuery = MutableStateFlow(SearchQuery())
     val searchQuery: StateFlow<SearchQuery> = _searchQuery
-    val searchResults: StateFlow<List<MediaItem>> = combine(media, _searchQuery) { l, q -> filterSearch(l, q) }
-        .stateIn(viewModelScope, SharingStarted.Lazily, emptyList())
+    private val smartHits = MutableStateFlow<List<Long>>(emptyList())
+    val searchResults: StateFlow<List<MediaItem>> = combine(media, _searchQuery, smartHits) { l, q, hits -> filterSearch(l, q, hits) }
+        .stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
+    private var smartSearchJob: Job? = null
 
     // Ad-hoc lists the viewer can open (duplicates, largest files, map cluster, memories)
     private val customIds = MutableStateFlow<Map<String, List<Long>>>(emptyMap())
@@ -171,6 +177,14 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     val vaultBusy: StateFlow<String?> = _vaultBusy
     private val _vaultBiometric = MutableStateFlow(vault.biometricEnabled)
     val vaultBiometric: StateFlow<Boolean> = _vaultBiometric
+
+    // ---------------- Photo sorter ----------------
+
+    private val _sorterEnabled = MutableStateFlow(prefs.sorterEnabled)
+    val sorterEnabled: StateFlow<Boolean> = _sorterEnabled
+    val sorterState: StateFlow<SorterState> = sorter.state
+    private var sortJob: Job? = null
+    @Volatile private var rescanPending = false
 
     // ---------------- Tools ----------------
 
@@ -228,30 +242,97 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         val ids = rawMedia.value.mapTo(HashSet()) { it.id } + _trash.value.map { it.id }
         _selection.value = _selection.value.filterTo(HashSet()) { it in ids }
         maybeAutoBackup()
+        startSorting()
     }
 
+    // ---------------- Photo sorter ----------------
+
+    private fun startSorting() {
+        if (!_sorterEnabled.value || media.value.isEmpty()) return
+        if (sortJob?.isActive == true) { rescanPending = true; return }
+        sortJob = viewModelScope.launch {
+            do {
+                rescanPending = false
+                runCatching { sorter.scan(media.value) }
+            } while (rescanPending && _sorterEnabled.value)
+        }
+    }
+
+    fun setSorterEnabled(b: Boolean) {
+        prefs.sorterEnabled = b
+        _sorterEnabled.value = b
+        if (b) startSorting() else { sortJob?.cancel(); rescanPending = false }
+    }
+
+    private fun sorterOp(msg: String? = null, block: suspend () -> Unit) {
+        viewModelScope.launch {
+            runCatching { block() }.onFailure { toast("Sorter: ${it.message}") }
+            msg?.let { toast(it) }
+        }
+    }
+
+    fun sorterApprove(id: String) = sorterOp("Added to your Albums tab") { sorter.approve(id) }
+    fun sorterUnapprove(id: String) = sorterOp("Moved back to suggestions") { sorter.unapprove(id) }
+    fun sorterDismiss(id: String) = sorterOp { sorter.dismiss(id) }
+    fun sorterRestore(id: String) = sorterOp { sorter.restore(id) }
+    fun sorterRename(id: String, name: String) = sorterOp { sorter.rename(id, name) }
+    fun sorterDelete(id: String) = sorterOp("Smart album removed") { sorter.delete(id) }
+    fun sorterCreate(name: String, prompt: String?, items: List<MediaItem> = emptyList()) = sorterOp("Smart album created") {
+        val id = sorter.create(name, prompt)
+        if (items.isNotEmpty()) sorter.addPhotos(id, items.map { it.id })
+        clearSelection()
+    }
+    fun sorterAdd(albumId: String, items: List<MediaItem>) = sorterOp("Got it — the sorter will learn from these") {
+        sorter.addPhotos(albumId, items.map { it.id }); clearSelection()
+    }
+    fun sorterRemove(albumId: String, items: List<MediaItem>) = sorterOp("Removed — the sorter will learn from this") {
+        sorter.removePhotos(albumId, items.map { it.id }); clearSelection()
+    }
+    fun sorterMove(fromId: String, toId: String, items: List<MediaItem>) = sorterOp("Moved — the sorter will learn from this") {
+        sorter.movePhotos(fromId, toId, items.map { it.id }); clearSelection()
+    }
+    fun sorterReset() = sorterOp("The sorter's learning was reset") { sorter.resetLearning() }
+    fun installSearchModel() = sorterOp { sorter.installSearchModel() }
+    fun removeSearchModel() = sorterOp("Search & sort removed") { sorter.removeSearchModel() }
+
     fun listFor(source: String): Flow<List<MediaItem>> = when {
+        source == "all" -> media
         source == "fav" -> favorites
         source == "trash" -> trash
         source == "search" -> searchResults
         source.startsWith("c_") -> combine(media, customIds) { m, c -> resolveCustom(m, c[source.drop(2)]) }
-        source.startsWith("a") -> {
-            val id = source.drop(1).toLongOrNull()
+        source.startsWith("smart_") -> {
+            val id = source.removePrefix("smart_")
+            combine(media, sorter.state) { m, s -> smartItems(m, s.albums.firstOrNull { it.album.id == id }?.ids) }
+        }
+        source.startsWith("alb_") -> {
+            val id = source.removePrefix("alb_").toLongOrNull()
             media.map { l -> l.filter { it.bucketId == id } }
         }
         else -> media
     }
 
     fun snapshotFor(source: String): List<MediaItem> = when {
+        source == "all" -> media.value
         source == "fav" -> favorites.value
         source == "trash" -> trash.value
-        source == "search" -> filterSearch(media.value, _searchQuery.value)
+        source == "search" -> searchResults.value
         source.startsWith("c_") -> resolveCustom(media.value, customIds.value[source.drop(2)])
-        source.startsWith("a") -> {
-            val id = source.drop(1).toLongOrNull()
+        source.startsWith("smart_") -> {
+            val id = source.removePrefix("smart_")
+            smartItems(media.value, sorter.state.value.albums.firstOrNull { it.album.id == id }?.ids)
+        }
+        source.startsWith("alb_") -> {
+            val id = source.removePrefix("alb_").toLongOrNull()
             media.value.filter { it.bucketId == id }
         }
         else -> media.value
+    }
+
+    private fun smartItems(all: List<MediaItem>, ids: List<Long>?): List<MediaItem> {
+        if (ids.isNullOrEmpty()) return emptyList()
+        val set = ids.toHashSet()
+        return all.filter { it.id in set }
     }
 
     /** Stores a list of ids and returns the viewer source name for it. */
@@ -285,12 +366,28 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     // ---------------- Search ----------------
 
-    fun updateSearch(q: SearchQuery) { _searchQuery.value = q }
+    fun updateSearch(q: SearchQuery) {
+        val textChanged = q.text != _searchQuery.value.text
+        _searchQuery.value = q
+        if (textChanged) scheduleSmartSearch(q.text)
+    }
 
-    private fun filterSearch(list: List<MediaItem>, q: SearchQuery): List<MediaItem> {
+    private fun scheduleSmartSearch(text: String) {
+        smartSearchJob?.cancel()
+        if (text.isBlank() || !_sorterEnabled.value || sorter.state.value.search != SearchModelState.Ready) {
+            smartHits.value = emptyList()
+            return
+        }
+        smartSearchJob = viewModelScope.launch {
+            delay(400)
+            smartHits.value = runCatching { sorter.search(text, media.value) }.getOrDefault(emptyList())
+        }
+    }
+
+    private fun filterSearch(list: List<MediaItem>, q: SearchQuery, hits: List<Long>): List<MediaItem> {
         if (q.isEmpty) return emptyList()
         val words = q.text.trim().lowercase().split(Regex("\\s+")).filter { it.isNotBlank() }
-        return list.filter { m ->
+        val nameMatches = list.filter { m ->
             val typeOk = when (q.type) {
                 SearchType.ALL -> true
                 SearchType.PHOTOS -> !m.isVideo
@@ -305,6 +402,23 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             val hay = (m.name + " " + m.bucketName + " " + m.relativePath + " " + m.mimeType).lowercase()
             words.all { hay.contains(it) }
         }
+        if (hits.isEmpty() || words.isEmpty()) return nameMatches
+        // Add "Search & sort" matches (by picture content) after the name matches, keeping type/date filters.
+        val already = nameMatches.mapTo(HashSet()) { it.id }
+        val byId = list.associateBy { it.id }
+        val smart = hits.mapNotNull { id -> byId[id] }.filter { m ->
+            m.id !in already &&
+                when (q.type) {
+                    SearchType.ALL -> true
+                    SearchType.PHOTOS -> !m.isVideo
+                    SearchType.VIDEOS -> m.isVideo
+                    SearchType.FAVORITES -> m.isFavorite
+                    SearchType.SCREENSHOTS -> m.relativePath.contains("Screenshot", true) || m.bucketName.contains("Screenshot", true)
+                } &&
+                (q.fromMillis == null || m.dateTaken >= q.fromMillis) &&
+                (q.toMillis == null || m.dateTaken <= q.toMillis)
+        }
+        return nameMatches + smart
     }
 
     // ---------------- Selection ----------------

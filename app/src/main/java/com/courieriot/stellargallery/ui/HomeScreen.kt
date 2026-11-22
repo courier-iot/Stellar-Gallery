@@ -16,7 +16,9 @@ import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material.icons.outlined.AutoAwesome
 import androidx.compose.material.icons.outlined.CloudUpload
+import com.courieriot.stellargallery.sorter.AlbumStatus
 import androidx.compose.material.icons.outlined.FileCopy
 import androidx.compose.material.icons.outlined.Map
 import androidx.compose.material.icons.outlined.PieChart
@@ -85,6 +87,7 @@ enum class HomeTab(val label: String, val icon: ImageVector) {
     ALBUMS("Albums", Icons.Outlined.Collections),
     FAVORITES("Favorites", Icons.Outlined.FavoriteBorder),
     BIN("Bin", Icons.Outlined.Delete),
+    SORTER("Sorter", Icons.Outlined.AutoAwesome),
 }
 
 @Composable
@@ -102,13 +105,21 @@ fun HomeScreen(vm: MainViewModel, nav: NavController) {
     val hideVault by vm.hideVaultEntry.collectAsStateWithLifecycle()
     val memories by vm.memories.collectAsStateWithLifecycle()
     val showMemories by vm.showMemories.collectAsStateWithLifecycle()
+    val sorterOn by vm.sorterEnabled.collectAsStateWithLifecycle()
+    val sorterState by vm.sorterState.collectAsStateWithLifecycle()
+    val smartAlbums = remember(sorterState, sorterOn) {
+        if (!sorterOn) emptyList()
+        else sorterState.albums.filter { it.album.status == AlbumStatus.APPROVED }
+    }
+    val mediaById = remember(media) { media.associateBy { it.id } }
+    LaunchedEffect(sorterOn) { if (!sorterOn && tab == HomeTab.SORTER) tab = HomeTab.PHOTOS }
     var confirmEmpty by remember { mutableStateOf(false) }
 
     val list = when (tab) {
         HomeTab.PHOTOS -> media
         HomeTab.FAVORITES -> favorites
         HomeTab.BIN -> trash
-        HomeTab.ALBUMS -> emptyList()
+        HomeTab.ALBUMS, HomeTab.SORTER -> emptyList()
     }
     val source = when (tab) {
         HomeTab.FAVORITES -> "fav"
@@ -173,7 +184,7 @@ fun HomeScreen(vm: MainViewModel, nav: NavController) {
         },
         bottomBar = {
             NavigationBar(containerColor = Panel.copy(alpha = 0.92f)) {
-                HomeTab.entries.forEach { t ->
+                HomeTab.entries.filter { it != HomeTab.SORTER || sorterOn }.forEach { t ->
                     NavigationBarItem(
                         selected = tab == t,
                         onClick = { tab = t },
@@ -192,7 +203,14 @@ fun HomeScreen(vm: MainViewModel, nav: NavController) {
         Box(Modifier.fillMaxSize().padding(pad)) {
             when {
                 loading && media.isEmpty() -> CircularProgressIndicator(Modifier.align(Alignment.Center))
-                tab == HomeTab.ALBUMS -> AlbumsGrid(albums) { nav.navigate("album/${it.bucketId}") }
+                tab == HomeTab.ALBUMS -> AlbumsGrid(
+                    albums = albums,
+                    smart = smartAlbums,
+                    mediaById = mediaById,
+                    onOpen = { nav.navigate("album/${it.bucketId}") },
+                    onOpenSmart = { nav.navigate("smart/$it") },
+                )
+                tab == HomeTab.SORTER -> SorterTab(vm, nav)
                 else -> Column(Modifier.fillMaxSize()) {
                     if (tab == HomeTab.BIN && trash.isNotEmpty()) {
                         Text(
@@ -283,7 +301,7 @@ fun AlbumScreen(vm: MainViewModel, nav: NavController, bucketId: Long) {
                     },
                     actions = {
                         if (items.any { !it.isVideo }) {
-                            IconButton(onClick = { nav.navigate("slideshow/a$bucketId/0") }) {
+                            IconButton(onClick = { nav.navigate("slideshow/alb_$bucketId/0") }) {
                                 Icon(Icons.Outlined.Slideshow, "Slideshow")
                             }
                         }
@@ -303,7 +321,7 @@ fun AlbumScreen(vm: MainViewModel, nav: NavController, bucketId: Long) {
                 groupByDate = group && (sort == SortOrder.NEWEST || sort == SortOrder.OLDEST),
                 selection = selection,
                 emptyText = "This album is empty.",
-                onOpen = { idx -> nav.navigate("viewer/a$bucketId/$idx") },
+                onOpen = { idx -> nav.navigate("viewer/alb_$bucketId/$idx") },
                 onToggle = vm::toggleSelection,
                 onSelectionChange = vm::setSelection,
                 onColumnsChange = vm::setGridColumns,

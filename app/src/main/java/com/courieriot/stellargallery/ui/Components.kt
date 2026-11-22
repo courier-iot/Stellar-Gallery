@@ -60,6 +60,7 @@ import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.SelectAll
+import androidx.compose.material.icons.outlined.AutoAwesome
 import androidx.compose.material.icons.outlined.ContentCopy
 import androidx.compose.material.icons.outlined.Delete
 import androidx.compose.material.icons.outlined.DeleteForever
@@ -109,6 +110,7 @@ import coil.request.ImageRequest
 import com.courieriot.stellargallery.MainViewModel
 import com.courieriot.stellargallery.data.Album
 import com.courieriot.stellargallery.data.MediaItem
+import com.courieriot.stellargallery.sorter.SmartAlbumView
 import com.courieriot.stellargallery.ui.theme.Magenta
 import com.courieriot.stellargallery.ui.theme.Neon
 import com.courieriot.stellargallery.ui.theme.Panel
@@ -391,8 +393,14 @@ fun MediaThumb(
 }
 
 @Composable
-fun AlbumsGrid(albums: List<Album>, onOpen: (Album) -> Unit) {
-    if (albums.isEmpty()) { EmptyState("No albums yet."); return }
+fun AlbumsGrid(
+    albums: List<Album>,
+    smart: List<SmartAlbumView> = emptyList(),
+    mediaById: Map<Long, MediaItem> = emptyMap(),
+    onOpen: (Album) -> Unit,
+    onOpenSmart: (String) -> Unit = {},
+) {
+    if (albums.isEmpty() && smart.isEmpty()) { EmptyState("No albums yet."); return }
     LazyVerticalGrid(
         columns = GridCells.Fixed(2),
         contentPadding = PaddingValues(12.dp),
@@ -400,24 +408,65 @@ fun AlbumsGrid(albums: List<Album>, onOpen: (Album) -> Unit) {
         verticalArrangement = Arrangement.spacedBy(14.dp),
         modifier = Modifier.fillMaxSize(),
     ) {
-        items(albums, key = { it.bucketId }) { a ->
-            Column(Modifier.clickable { onOpen(a) }) {
-                AsyncImage(
-                    model = ImageRequest.Builder(LocalContext.current).data(a.cover.uri).size(500).build(),
-                    contentDescription = a.name,
-                    contentScale = ContentScale.Crop,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .aspectRatio(1f)
-                        .clip(RoundedCornerShape(14.dp))
-                        .background(Panel)
-                        .border(1.dp, Brush.linearGradient(listOf(Neon.copy(alpha = .6f), Magenta.copy(alpha = .6f))), RoundedCornerShape(14.dp)),
+        if (smart.isNotEmpty()) {
+            item(key = "smart_h", span = { GridItemSpan(maxLineSpan) }) {
+                Text("✦ Smart albums", style = MaterialTheme.typography.titleSmall, color = Neon)
+            }
+            items(smart, key = { "s_" + it.album.id }) { sv ->
+                val cover = sv.ids.firstNotNullOfOrNull { mediaById[it] }
+                AlbumCard(
+                    name = sv.album.name,
+                    count = sv.ids.size,
+                    coverUri = cover?.uri,
+                    smart = true,
+                    onClick = { onOpenSmart(sv.album.id) },
                 )
-                Spacer(Modifier.height(6.dp))
-                Text(a.name, style = MaterialTheme.typography.titleSmall, maxLines = 1)
-                Text("${a.count}", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+            item(key = "folders_h", span = { GridItemSpan(maxLineSpan) }) {
+                Text("Folders", style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
         }
+        items(albums, key = { it.bucketId }) { a ->
+            AlbumCard(name = a.name, count = a.count, coverUri = a.cover.uri, smart = false, onClick = { onOpen(a) })
+        }
+    }
+}
+
+@Composable
+private fun AlbumCard(name: String, count: Int, coverUri: Uri?, smart: Boolean, onClick: () -> Unit) {
+    Column(Modifier.clickable(onClick = onClick)) {
+        Box {
+            AsyncImage(
+                model = ImageRequest.Builder(LocalContext.current).data(coverUri).size(500).build(),
+                contentDescription = name,
+                contentScale = ContentScale.Crop,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .aspectRatio(1f)
+                    .clip(RoundedCornerShape(14.dp))
+                    .background(Panel)
+                    .border(
+                        if (smart) 2.dp else 1.dp,
+                        Brush.linearGradient(listOf(Neon.copy(alpha = if (smart) 1f else .6f), Magenta.copy(alpha = if (smart) 1f else .6f))),
+                        RoundedCornerShape(14.dp),
+                    ),
+            )
+            if (smart) {
+                Text(
+                    "✦",
+                    color = Neon,
+                    fontSize = 14.sp,
+                    modifier = Modifier
+                        .align(Alignment.TopEnd)
+                        .padding(6.dp)
+                        .background(Color.Black.copy(alpha = 0.6f), CircleShape)
+                        .padding(horizontal = 6.dp, vertical = 1.dp),
+                )
+            }
+        }
+        Spacer(Modifier.height(6.dp))
+        Text(name, style = MaterialTheme.typography.titleSmall, maxLines = 1, color = MaterialTheme.colorScheme.onSurface)
+        Text("$count", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
     }
 }
 
@@ -448,7 +497,19 @@ fun RowScope.MediaSelectionActions(vm: MainViewModel, nav: NavController, items:
     val context = LocalContext.current
     var menu by remember { mutableStateOf(false) }
     var picker by remember { mutableStateOf<PickMode?>(null) }
+    var smartPicker by remember { mutableStateOf(false) }
+    val sorterOn by vm.sorterEnabled.collectAsStateWithLifecycle()
     val allFav = items.isNotEmpty() && items.all { it.isFavorite }
+    if (smartPicker) {
+        SmartAlbumPicker(
+            vm, title = "Add to smart album", excludeId = null,
+            onDismiss = { smartPicker = false },
+            onNew = { name -> vm.sorterCreate(name, null, items); smartPicker = false },
+        ) { targetId ->
+            vm.sorterAdd(targetId, items)
+            smartPicker = false
+        }
+    }
 
     IconButton(onClick = { vm.shareMedia(context, items) }) { Icon(Icons.Outlined.Share, "Share") }
     IconButton(onClick = { vm.setFavorite(items, !allFav) }) {
@@ -473,6 +534,13 @@ fun RowScope.MediaSelectionActions(vm: MainViewModel, nav: NavController, items:
                 leadingIcon = { Icon(Icons.Outlined.VisibilityOff, null) },
                 onClick = { menu = false; hideOrSetup(vm, nav, items) },
             )
+            if (sorterOn) {
+                DropdownMenuItem(
+                    text = { Text("Add to smart album") },
+                    leadingIcon = { Icon(Icons.Outlined.AutoAwesome, null) },
+                    onClick = { menu = false; smartPicker = true },
+                )
+            }
             DropdownMenuItem(
                 text = { Text("Send over Wi-Fi") },
                 leadingIcon = { Icon(Icons.Outlined.Wifi, null) },

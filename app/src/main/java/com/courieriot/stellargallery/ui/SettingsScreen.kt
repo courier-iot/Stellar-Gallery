@@ -13,7 +13,11 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.ui.draw.clip
+import androidx.compose.material.icons.outlined.AutoAwesome
 import androidx.compose.material.icons.outlined.CloudUpload
+import androidx.compose.material.icons.outlined.ManageSearch
+import androidx.compose.material.icons.outlined.RestartAlt
+import com.courieriot.stellargallery.sorter.SearchModelState
 import androidx.compose.material.icons.outlined.DarkMode
 import androidx.compose.material.icons.outlined.FileCopy
 import androidx.compose.material.icons.outlined.History
@@ -89,6 +93,9 @@ fun SettingsScreen(vm: MainViewModel, nav: NavController) {
     val strip by vm.stripMetadata.collectAsStateWithLifecycle()
     val hideVault by vm.hideVaultEntry.collectAsStateWithLifecycle()
     val widgetFav by vm.widgetFavoritesOnly.collectAsStateWithLifecycle()
+    val sorterOn by vm.sorterEnabled.collectAsStateWithLifecycle()
+    val sorterState by vm.sorterState.collectAsStateWithLifecycle()
+    var confirmReset by remember { mutableStateOf(false) }
     var sortDialog by remember { mutableStateOf(false) }
 
     Scaffold(
@@ -148,6 +155,34 @@ fun SettingsScreen(vm: MainViewModel, nav: NavController) {
                 }
             }
 
+            item { Section("Photo sorter") }
+            item {
+                SwitchRow(Icons.Outlined.AutoAwesome, "Photo sorter (on-device AI)", sorterOn, vm::setSorterEnabled)
+            }
+            if (sorterOn) {
+                item {
+                    val s = sorterState.search
+                    val subtitle = when (s) {
+                        SearchModelState.Ready -> "On · search by what's in a photo (e.g. “orange cat”). Tap to remove."
+                        is SearchModelState.Downloading -> "Downloading… ${(s.progress * 100).toInt()}%"
+                        is SearchModelState.Failed -> s.message + " · tap to try again"
+                        SearchModelState.NotInstalled -> "Off · tap to download (~45 MB) from this app's GitHub releases"
+                    }
+                    SettingRow(Icons.Outlined.ManageSearch, "Search & sort", subtitle) {
+                        when (s) {
+                            SearchModelState.Ready -> vm.removeSearchModel()
+                            is SearchModelState.Downloading -> Unit
+                            else -> vm.installSearchModel()
+                        }
+                    }
+                }
+                item {
+                    SettingRow(Icons.Outlined.RestartAlt, "Reset what the sorter learned", "Starts suggestions over. Your photos aren't touched.") {
+                        confirmReset = true
+                    }
+                }
+            }
+
             item { Section("Privacy") }
             item { SwitchRow(Icons.Outlined.LocationOff, "Remove location & camera info when sharing", strip, vm::setStripMetadata) }
             item { SwitchRow(Icons.Outlined.VisibilityOff, "Hide the vault icon (long-press the title to open)", hideVault, vm::setHideVaultEntry) }
@@ -200,7 +235,10 @@ fun SettingsScreen(vm: MainViewModel, nav: NavController) {
                                 "• AndroidX Biometric — vault unlock (Apache 2.0)\n" +
                                 "• osmdroid — map, tiles © OpenStreetMap contributors (Apache 2.0 / ODbL)\n" +
                                 "• ZXing & zxing-android-embedded — QR pairing (Apache 2.0)\n" +
-                                "• OkHttp — WebDAV backup (Apache 2.0)",
+                                "• OkHttp — WebDAV backup (Apache 2.0)\n" +
+                                "• ONNX Runtime — photo sorter (MIT)\n" +
+                                "• MobileCLIP-S0 model © Apple Inc. — photo sorter (Apple sample code license; " +
+                                "copy included in the app). Not endorsed by Apple.",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
@@ -213,6 +251,16 @@ fun SettingsScreen(vm: MainViewModel, nav: NavController) {
                 }
             }
         }
+    }
+
+    if (confirmReset) {
+        AlertDialog(
+            onDismissRequest = { confirmReset = false },
+            title = { Text("Reset the sorter?") },
+            text = { Text("Your smart albums and everything you taught it will be cleared. Photos stay where they are.") },
+            confirmButton = { TextButton(onClick = { vm.sorterReset(); confirmReset = false }) { Text("Reset") } },
+            dismissButton = { TextButton(onClick = { confirmReset = false }) { Text("Cancel") } },
+        )
     }
 
     if (sortDialog) {

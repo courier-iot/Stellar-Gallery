@@ -29,7 +29,10 @@ import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.material3.LocalContentColor
+import com.courieriot.stellargallery.ui.theme.TextHi
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -122,6 +125,7 @@ fun StellarRoot(vm: MainViewModel, onCloseExternal: () -> Unit = {}) {
     val update by vm.updateAvailable.collectAsStateWithLifecycle()
     val external by vm.external.collectAsStateWithLifecycle()
 
+    CompositionLocalProvider(LocalContentColor provides TextHi) {
     Box(Modifier.fillMaxSize()) {
         Starfield()
         if (!granted && external == null) {
@@ -173,6 +177,10 @@ fun StellarRoot(vm: MainViewModel, onCloseExternal: () -> Unit = {}) {
                 composable("map") { MapScreen(vm, nav) }
                 composable("videoEdit") { VideoEditScreen(vm, nav) }
                 composable("backup") { BackupScreen(vm, nav) }
+                composable(
+                    "smart/{id}",
+                    arguments = listOf(navArgument("id") { type = NavType.StringType }),
+                ) { e -> SmartAlbumScreen(vm, nav, e.arguments?.getString("id") ?: "") }
             }
         }
         external?.let { ext ->
@@ -185,6 +193,7 @@ fun StellarRoot(vm: MainViewModel, onCloseExternal: () -> Unit = {}) {
                 .navigationBarsPadding()
                 .padding(bottom = 84.dp),
         )
+    }
     }
 
     update?.let { r ->

@@ -3,6 +3,12 @@
 A private, offline photo & video gallery for Android with a Stellar/cyberpunk look.
 No accounts, no tracking, no Google services.
 
+## New in v2.1.0
+- Photo sorter: on-device AI that suggests smart albums (approve, rename, teach it). Toggle in Settings.
+- Optional "Search & sort" download (~45 MB) for searching by what's in a photo.
+- The build downloads and test-runs the models automatically (scripts/prepare_sorter.py) and attaches
+  the search model to each release. Nothing to upload by hand.
+
 ## New in v2.0.0
 - Open photos & videos from other apps, search with type/date filters, drag-to-select, pinch to resize the grid
 - Slideshow, set as wallpaper, accent colors + pure black theme, "On this day" memories

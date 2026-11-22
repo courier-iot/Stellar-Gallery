@@ -69,6 +69,11 @@ class Prefs(context: Context) {
         get() = p.getBoolean("bk_video", true)
         set(v) = p.edit().putBoolean("bk_video", v).apply()
 
+    // ---- v2.1.0 ----
+    var sorterEnabled: Boolean
+        get() = p.getBoolean("sorter", true)
+        set(v) = p.edit().putBoolean("sorter", v).apply()
+
     companion object {
         fun get(context: Context) = Prefs(context.applicationContext)
     }

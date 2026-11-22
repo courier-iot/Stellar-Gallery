@@ -5,7 +5,7 @@ plugins {
 }
 
 // Bump this for every release. The workflow reads it to tag the GitHub release (vX.Y.Z).
-val appVersion = "2.0.0"
+val appVersion = "2.1.0"
 
 val versionParts = appVersion.split(".").map { it.toIntOrNull() ?: 0 }
 val computedVersionCode = versionParts.getOrElse(0) { 0 } * 10000 +
@@ -24,6 +24,11 @@ android {
         targetSdk = 35
         versionCode = computedVersionCode
         versionName = appVersion
+        // Photo sorter runtime: phones only (keeps the APK smaller)
+        ndk { abiFilters += listOf("arm64-v8a", "armeabi-v7a") }
+    }
+    androidResources {
+        noCompress += "onnx"
     }
 
     signingConfigs {
@@ -102,5 +107,8 @@ dependencies {
     implementation("org.osmdroid:osmdroid-android:6.1.20")       // OpenStreetMap (no Google Maps)
     implementation("com.google.zxing:core:3.5.3")               // QR codes (open-source library, no services)
     implementation("com.journeyapps:zxing-android-embedded:4.3.0") { isTransitive = false }
-    implementation("com.squareup.okhttp3:okhttp:4.12.0")        // WebDAV backup
+    implementation("com.squareup.okhttp3:okhttp:4.12.0")        // WebDAV backup + model download
+
+    // v2.1.0 photo sorter: on-device AI (open source, runs offline)
+    implementation("com.microsoft.onnxruntime:onnxruntime-android:1.19.2")
 }
